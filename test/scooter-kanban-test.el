@@ -113,7 +113,7 @@
     (magit-section-show (magit-current-section))
     (let ((text (buffer-substring-no-properties (point-min) (point-max))))
       (should (string-match-p "blocked by +Kanban in Emacs (In progress)" text))
-      (should (string-match-p "description +Make the board work.\n +In Emacs." text))
+      (should (string-match-p "     description\n       Make the board work.\n       In Emacs.\n" text))
       (should (string-match-p "url +https://s.example/chat/c1" text)))
     ;; A display stretch where the folded text starts would still be drawn,
     ;; indenting the next stage's heading once the card folds closed.
