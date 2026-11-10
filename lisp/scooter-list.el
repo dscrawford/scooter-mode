@@ -21,10 +21,10 @@
 
 (declare-function scooter-open "scooter" (server id))
 (declare-function scooter-new "scooter" (server text &optional model))
-(declare-function scooter-dispatch "scooter")
-(declare-function scooter-sandbox "scooter-conversation")
-(declare-function scooter-web-services "scooter-conversation")
-(declare-function scooter-links "scooter-conversation")
+(autoload 'scooter-dispatch "scooter" nil t)
+(autoload 'scooter-sandbox "scooter-conversation" nil t)
+(autoload 'scooter-web-services "scooter-conversation" nil t)
+(autoload 'scooter-links "scooter-conversation" nil t)
 (declare-function evil-set-initial-state "evil-core" (mode state))
 
 (defface scooter-list-awaiting '((t :inherit (warning bold)))

@@ -26,7 +26,7 @@
 (require 'scooter-auth)
 (require 'scooter-list)
 (require 'scooter-agent-shell)
-(declare-function scooter-find-file "scooter-tramp")
+(autoload 'scooter-find-file "scooter-tramp" nil t)
 (declare-function scooter-sandbox "scooter-conversation")
 (declare-function scooter-web-services "scooter-conversation")
 (declare-function scooter-links "scooter-conversation")

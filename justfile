@@ -25,9 +25,10 @@ compile:
     emacs -Q --batch -L lisp --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile lisp/*.el
     rm -f lisp/*.elc
 
-# Each file loads (or autoloads) every function it calls.
+# Each file loads (or autoloads) every function it calls or binds to a key.
 deps:
     ok=0; for f in lisp/*.el; do emacs -Q --batch -L lisp -l test/check-deps.el "$f" || ok=1; done; exit $ok
+    ok=0; for f in lisp/*.el; do emacs -Q --batch -L lisp -l test/check-commands.el "$f" || ok=1; done; exit $ok
 
 # ERT tests with the dev shell's pinned nixpkgs dependencies.
 ert:
