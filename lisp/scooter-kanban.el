@@ -720,6 +720,7 @@ CONVERSATION is (SERVER ID) to go to instead."
 (defun scooter-kanban-show-conversation (server id &optional select)
   "Show SERVER's conversation ID in another window, selecting it when SELECT.
 A shell already open on it is reused."
+  (require 'agent-shell)
   (let ((board (selected-window)))
     (if-let* ((buf (scooter-kanban--shell server id)))
         (display-buffer buf scooter-kanban-display-action)
