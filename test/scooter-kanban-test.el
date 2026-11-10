@@ -191,7 +191,7 @@
                (opened nil)
                ((symbol-function 'scooter-kanban-show-conversation) (lambda (&rest args) (setq opened args))))
       (scooter-kanban-new "Do the thing")
-      (should (equal opened '(home "new1" t))))
+      (should (equal opened '(home "new1" t "Do the thing"))))
     (should (equal (scooter-kanban-test--writes)
                    '(("POST" "/conversations" nil)
                      ("PUT" "/conversations/new1/folder" ((folderId . "s2")))
@@ -271,3 +271,111 @@
     (should-not scooter-kanban--stale)))
 
 ;;; scooter-kanban-test.el ends here
+
+(defmacro scooter-kanban-test-with-tabs (&rest body)
+  "Run BODY on the board with cards opening in tabs, `scooter-open' faked."
+  (declare (indent 0))
+  `(scooter-kanban-test-with-board
+     (require 'agent-shell)
+     (let ((scooter-kanban-open-in 'tab)
+           (opened nil))
+       (cl-letf (((symbol-function 'scooter-open)
+                  (lambda (server id)
+                    (push (list server id) opened)
+                    (let ((buf (get-buffer-create (format "*fake shell %s*" id))))
+                      (with-current-buffer buf
+                        (setq-local scooter-kanban-test--conversation (list server id)))
+                      (display-buffer buf agent-shell-display-action)
+                      buf)))
+                 ((symbol-function 'scooter-kanban--shell)
+                  (lambda (server id) (get-buffer (format "*fake shell %s*" id))))
+                 ((symbol-function 'scooter-kanban--shell-buffer-p)
+                  (lambda (buf) (string-prefix-p "*fake shell" (buffer-name buf))))
+                 ((symbol-function 'agent-shell-subscribe-to) #'ignore))
+         (tab-bar-mode 1)
+         (switch-to-buffer "*scooter-kanban*")
+         (delete-other-windows)
+         (unwind-protect (progn ,@body)
+           (let ((scooter-kanban--closing t))
+             (dolist (b (match-buffers "\\`\\*fake shell")) (kill-buffer b)))
+           (while (cdr (funcall tab-bar-tabs-function)) (tab-bar-close-tab))
+           (tab-bar-mode -1))))))
+
+(defvar-local scooter-kanban-test--conversation nil)
+
+(defun scooter-kanban-test--tab-names ()
+  (mapcar (lambda (tab) (alist-get 'name tab)) (funcall tab-bar-tabs-function)))
+
+(ert-deftest scooter-kanban-test-tabs-open-and-reuse ()
+  (scooter-kanban-test-with-tabs
+    (scooter-kanban-test--goto "Write docs")
+    (scooter-kanban-visit)
+    ;; Its own tab, named after the card, showing only the chat.
+    (should (equal (buffer-name) "*fake shell c2*"))
+    (should (one-window-p t))
+    (should (equal (alist-get 'name (tab-bar--current-tab)) "Write docs"))
+    (should (= (length (funcall tab-bar-tabs-function)) 2))
+    ;; Opening it again from the board switches to that tab, no new one.
+    (tab-bar-switch-to-recent-tab)
+    (should (eq (window-buffer) (get-buffer "*scooter-kanban*")))
+    (scooter-kanban-test--goto "Write docs")
+    (scooter-kanban-visit)
+    (should (equal (buffer-name) "*fake shell c2*"))
+    (should (= (length (funcall tab-bar-tabs-function)) 2))
+    (should (equal opened '((home "c2"))))))
+
+(ert-deftest scooter-kanban-test-tabs-display-stays-on-board ()
+  (scooter-kanban-test-with-tabs
+    (scooter-kanban-test--goto "Fix login")
+    (scooter-kanban-display)
+    (should (eq (window-buffer) (get-buffer "*scooter-kanban*")))
+    (should (member "Fix login" (scooter-kanban-test--tab-names)))))
+
+(ert-deftest scooter-kanban-test-tabs-close-together ()
+  (scooter-kanban-test-with-tabs
+    ;; Closing the tab kills its shell.
+    (scooter-kanban-test--goto "Write docs")
+    (scooter-kanban-visit)
+    (tab-bar-close-tab)
+    (should-not (get-buffer "*fake shell c2*"))
+    (should (equal (scooter-kanban-test--tab-names) (list (alist-get 'name (tab-bar--current-tab)))))
+    ;; Killing the shell closes its tab, here and in the background.
+    (scooter-kanban-test--goto "Fix login")
+    (scooter-kanban-visit)
+    (kill-buffer "*fake shell c1*")
+    (should (= (length (funcall tab-bar-tabs-function)) 1))
+    (should (eq (window-buffer) (get-buffer "*scooter-kanban*")))
+    (set-buffer (window-buffer))
+    (scooter-kanban-test--goto "Write docs")
+    (scooter-kanban-display)
+    (kill-buffer "*fake shell c2*")
+    (should (= (length (funcall tab-bar-tabs-function)) 1))))
+
+(ert-deftest scooter-kanban-test-tabs-board-from-shell ()
+  (scooter-kanban-test-with-tabs
+    (scooter-kanban-test--goto "Write docs")
+    (scooter-kanban-visit)
+    ;; From the chat, the board comes back in its tab with point on the card.
+    (scooter-kanban (list 'home "c2"))
+    (should (eq (window-buffer) (get-buffer "*scooter-kanban*")))
+    (should (= (length (funcall tab-bar-tabs-function)) 2))
+    (should (equal (scooter-kanban-card-id (cdr (scooter-kanban-at-point))) "c2"))
+    ;; Stepping through cards peeks in a window, opening no tabs.
+    (scooter-kanban-next-card)
+    (should (= (length (funcall tab-bar-tabs-function)) 2))))
+
+(ert-deftest scooter-kanban-test-fold-levels ()
+  ;; Board, stage and card are levels 2, 3 and 4: each folds to show the next.
+  (scooter-kanban-test-with-board
+    (cl-flet ((shown (text) (progn (goto-char (point-min)) (search-forward text)
+                                   (not (invisible-p (match-beginning 0))))))
+      (magit-section-show-level-2-all)
+      (should (shown "Work  5 cards"))
+      (should-not (shown "  Design (3)"))
+      (magit-section-show-level-3-all)
+      (should (shown "  Design (3)"))
+      (should-not (shown "Write docs"))
+      (magit-section-show-level-4-all)
+      (should (shown "Write docs"))
+      (scooter-kanban-test--goto "Write docs")
+      (should (oref (magit-current-section) hidden)))))

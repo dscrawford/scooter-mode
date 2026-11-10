@@ -72,6 +72,17 @@ The message starts a run, so the agent can act on the new stage."
   :type '(cons (repeat function) alist)
   :group 'scooter)
 
+(defcustom scooter-kanban-open-in 'window
+  "Where opening a card shows its conversation.
+`window': in another window, the board kept in view.
+`tab': in a tab-bar tab of its own, named after the card.  Opening the
+card again switches to its tab, and closing the tab closes the
+conversation's shell; the conversation itself stays on the server.
+`C-c C-k' in a shell then goes to the board's tab."
+  :type '(choice (const :tag "Another window" window)
+                 (const :tag "A tab of its own" tab))
+  :group 'scooter)
+
 (defface scooter-kanban-board '((t :inherit (magit-section-heading bold) :height 1.1))
   "Face for board names."
   :group 'scooter)
@@ -559,7 +570,12 @@ A blocker is done once in the board's last stage, wherever it was read."
     ("R" "Rename board" scooter-kanban-rename-board)
     ("D" "Delete board" scooter-kanban-delete-board)
     ("g" "Refresh" scooter-kanban-refresh)
-    ("S" "More Scooter commands" scooter-dispatch)]])
+    ("S" "More Scooter commands" scooter-dispatch)]
+   ["Fold"
+    ("TAB" "This one" magit-section-toggle)
+    ("M-2" "To boards" magit-section-show-level-2-all)
+    ("M-3" "To stages" magit-section-show-level-3-all)
+    ("M-4" "To cards" magit-section-show-level-4-all)]])
 
 (defun scooter-kanban--buffer ()
   "Return the kanban buffer, showing every server's boards."
@@ -581,12 +597,15 @@ CONVERSATION is (SERVER ID) to go to instead."
   (interactive)
   (let* ((conversation (or conversation (scooter-agent-shell-conversation)))
          (buf (scooter-kanban--buffer)))
-    (if conversation
-        (progn
-          (pop-to-buffer buf scooter-kanban-display-action)
-          (unless (scooter-kanban--goto-card (car conversation) (cadr conversation))
-            (message "This conversation is on no board; `a' on a stage adds it")))
-      (pop-to-buffer-same-window buf))))
+    (cond
+     ((and (eq scooter-kanban-open-in 'tab) (or conversation (scooter-kanban--tab-number buf)))
+      (scooter-kanban--show-in-tab buf "Kanban"))
+     (conversation (pop-to-buffer buf scooter-kanban-display-action))
+     (t (pop-to-buffer-same-window buf)))
+    (when (and conversation
+               (not (with-current-buffer buf
+                      (scooter-kanban--goto-card (car conversation) (cadr conversation)))))
+      (message "This conversation is on no board; `a' on a stage adds it"))))
 
 (defun scooter-kanban--goto-card (server id)
   "Move to SERVER's card ID, unfolding its board and stage; non-nil when found."
@@ -720,7 +739,7 @@ CONVERSATION is (SERVER ID) to go to instead."
                      (equal (ignore-errors (scooter-agent-shell-conversation)) (list server id)))))
             (buffer-list)))
 
-(defun scooter-kanban-show-conversation (server id &optional select)
+(defun scooter-kanban--show-in-window (server id &optional select)
   "Show SERVER's conversation ID in another window, selecting it when SELECT.
 A shell already open on it is reused."
   (require 'agent-shell)
@@ -747,8 +766,117 @@ A shell already open on it is reused."
         (select-window (get-buffer-window buf))
       (when (window-live-p board) (select-window board)))))
 
+;;;; Opening cards in tabs
+
+(defvar-local scooter-kanban--tabbed nil
+  "Non-nil in a shell `scooter-kanban' opened in a tab of its own.")
+
+(defvar scooter-kanban--closing nil
+  "Non-nil while a tab and its shell are being closed together.")
+
+(defun scooter-kanban--tab-number (buf)
+  "Return the number of a tab other than the current one showing BUF, or nil."
+  (require 'tab-bar)
+  (when-let* ((tab (tab-bar-get-buffer-tab buf nil t)))
+    (1+ (alist-get 'index tab))))
+
+(defun scooter-kanban--tab-buffers (tab)
+  "Return the buffers TAB's windows show."
+  (if (eq (car tab) 'current-tab)
+      (delete-dups (mapcar #'window-buffer (window-list nil 'no-minibuf)))
+    (when-let* ((state (alist-get 'ws tab)))
+      (delete-dups (delq nil (mapcar #'get-buffer (window-state-buffers state)))))))
+
+(defun scooter-kanban--show-in-tab (buf name)
+  "Select a tab showing BUF, or make one named NAME showing only BUF.
+Return BUF's window there."
+  (require 'tab-bar)
+  (if-let* ((n (scooter-kanban--tab-number buf)))
+      (tab-bar-select-tab n)
+    (unless (and (eq (window-buffer) buf) (one-window-p t))
+      (tab-bar-new-tab)
+      (tab-bar-rename-tab name)
+      (switch-to-buffer buf nil t)
+      (delete-other-windows)))
+  (let ((win (get-buffer-window buf)))
+    (when win (select-window win))
+    win))
+
+(defun scooter-kanban--shell-buffer-p (buf)
+  "Non-nil when BUF is an agent-shell."
+  (with-current-buffer buf (derived-mode-p 'agent-shell-mode)))
+
+(defun scooter-kanban--tab-shell (buf)
+  "Make BUF's tab and shell close together."
+  (with-current-buffer buf
+    (setq scooter-kanban--tabbed t)
+    (add-hook 'kill-buffer-hook #'scooter-kanban--close-tab nil t))
+  (add-hook 'tab-bar-tab-pre-close-functions #'scooter-kanban--kill-tab-shells))
+
+(defun scooter-kanban--kill-tab-shells (tab _only)
+  "Kill the shells TAB was opened for, unless another tab shows them."
+  (unless scooter-kanban--closing
+    (let ((scooter-kanban--closing t))
+      (dolist (buf (scooter-kanban--tab-buffers tab))
+        (when (and (buffer-live-p buf)
+                   (buffer-local-value 'scooter-kanban--tabbed buf)
+                   (<= (length (tab-bar-get-buffer-tab buf nil nil t)) 1))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buf)))))))
+
+(defun scooter-kanban--close-tab ()
+  "Close the tabs that show only this shell, which is being killed."
+  (unless scooter-kanban--closing
+    (let ((scooter-kanban--closing t)
+          (buf (current-buffer)))
+      (dolist (tab (tab-bar-get-buffer-tab buf nil nil t))
+        (when (and (cdr (funcall tab-bar-tabs-function))
+                   (equal (scooter-kanban--tab-buffers tab) (list buf)))
+          (tab-bar-close-tab (1+ (alist-get 'index tab))))))))
+
+(defun scooter-kanban--show-tabbed (server id name select)
+  "Show SERVER's conversation ID in a tab named NAME, selecting it when SELECT."
+  (require 'agent-shell)
+  (require 'tab-bar)
+  (let ((buf (scooter-kanban--shell server id))
+        (fresh nil))
+    (unless buf
+      ;; agent-shell may show the shell once its session is picked, after
+      ;; this returns: it keeps this override for then, so the shell still
+      ;; goes to its tab rather than over the board.
+      (let ((display-buffer-overriding-action
+             `((,(lambda (b _alist)
+                   (when (scooter-kanban--shell-buffer-p b)
+                     (scooter-kanban--show-in-tab b name)))))))
+        (setq buf (scooter-open server id)
+              fresh t)))
+    (when (buffer-live-p buf)
+      (scooter-kanban--show-in-tab buf name)
+      (scooter-kanban--tab-shell buf)
+      (unless select
+        (tab-bar-switch-to-recent-tab)
+        (when fresh
+          (agent-shell-subscribe-to
+           :shell-buffer buf :event 'session-selected
+           :on-event (lambda (_)
+                       (run-at-time 0 nil (lambda ()
+                                            (when (and (buffer-live-p buf) (get-buffer-window buf))
+                                              (tab-bar-switch-to-recent-tab)))))))))))
+
+(defun scooter-kanban-show-conversation (server id &optional select name)
+  "Show SERVER's conversation ID, selecting it when SELECT.
+It goes in another window, or a tab named NAME, as
+`scooter-kanban-open-in' says."
+  (if (eq scooter-kanban-open-in 'tab)
+      (scooter-kanban--show-tabbed server id (or name id) select)
+    (scooter-kanban--show-in-window server id select)))
+
+(defun scooter-kanban--card-title (card)
+  "CARD's title, to name its tab."
+  (or (alist-get 'title (plist-get card :conv)) (scooter-kanban-card-id card)))
+
 (defun scooter-kanban-visit ()
-  "Open the card at point's conversation in another window and go there.
+  "Open the card at point's conversation and go there, in a window or tab.
 On a \"more\" line, show more of the stage; elsewhere fold the section."
   (interactive)
   (let ((s (magit-current-section)))
@@ -757,17 +885,23 @@ On a \"more\" line, show more of the stage; elsewhere fold the section."
      ((scooter-kanban--card-section)
       (let ((card (cdr (scooter-kanban-at-point))))
         (scooter-kanban-show-conversation (plist-get (car (scooter-kanban-at-point)) :server)
-                                          (scooter-kanban-card-id card) t)))
+                                          (scooter-kanban-card-id card) t
+                                          (scooter-kanban--card-title card))))
      (s (magit-section-toggle s)))))
 
 (defun scooter-kanban-display ()
-  "Show the card at point's conversation in another window, staying here."
+  "Show the card at point's conversation, staying here.
+It shows in another window, or opens in a tab in the background, as
+`scooter-kanban-open-in' says."
   (interactive)
   (pcase-let ((`(,board . ,card) (scooter-kanban-at-point)))
-    (scooter-kanban-show-conversation (plist-get board :server) (scooter-kanban-card-id card))))
+    (scooter-kanban-show-conversation (plist-get board :server) (scooter-kanban-card-id card)
+                                      nil (scooter-kanban--card-title card))))
 
 (defun scooter-kanban--step (by)
-  "Move BY cards in board order and show that card's conversation."
+  "Move BY cards in board order and show that card's conversation.
+It always shows in another window, even with `scooter-kanban-open-in'
+set to `tab': stepping through cards shouldn't open a tab for each one."
   (let ((cards nil) (here (scooter-kanban--card-section)))
     (magit-map-sections (lambda (s) (when (cl-typep s 'scooter-kanban-card-section) (push s cards)))
                         magit-root-section)
@@ -776,7 +910,8 @@ On a \"more\" line, show more of the stage; elsewhere fold the section."
            (next (and at (nth (+ at by) cards))))
       (unless (and next (>= (+ at by) 0)) (user-error "No more cards"))
       (goto-char (oref next start))
-      (scooter-kanban-display))))
+      (pcase-let ((`(,board . ,card) (scooter-kanban-at-point)))
+        (scooter-kanban--show-in-window (plist-get board :server) (scooter-kanban-card-id card))))))
 
 (defun scooter-kanban-next-card ()
   "Show the next card's conversation."
@@ -929,7 +1064,7 @@ first and, with `scooter-kanban-announce-moves', tells its agent."
     (scooter-request server "POST" (format "/conversations/%s/messages" (url-hexify-string id))
                      `((text . ,text)))
     (scooter-kanban--after-change server id)
-    (scooter-kanban-show-conversation server id t)))
+    (scooter-kanban-show-conversation server id t (truncate-string-to-width text 30 nil nil "…"))))
 
 (defun scooter-kanban-add (id)
   "Put the server's conversation ID on the board at point, in the stage at point."

@@ -120,11 +120,21 @@ Work  5 cards
 
 Each stage lists its cards in board order: status icon, title, High or
 Urgent, tags, the agent's note, who moved it last and what still blocks
-it. `TAB` folds a card open to its description, blockers, links and URL.
+it. Boards, stages and cards fold like an outline: `TAB` folds the one at
+point, `M-2` folds everything to boards, `M-3` to stages and `M-4` shows
+every card; a card folds open to its description, blockers, links and URL.
 `RET` opens the card's conversation in agent-shell in another window and
 keeps the board in view (`o` shows it without leaving the board, `]`/`[`
 step through the cards). From a Scooter shell, `scooter-kanban` shows the
 board beside it with point on that conversation's card.
+
+To open each card's chat in a tab of its own instead, set
+`scooter-kanban-open-in` to `tab`. The tab is named after the card, `RET`
+on the card again switches to it, and closing the tab closes the chat's
+shell (the conversation stays on the server; `RET` reopens it). `o` opens
+the tab in the background, and `C-c C-k` from a chat goes back to the
+board's tab. `]`/`[` still show cards in a window, so stepping through
+them doesn't open a tab for each.
 
 - Cards: `>`/`<` next or previous stage, `m` any stage, `M-<up>`/`M-<down>`
   reorder, `c` new conversation in the stage at point, `a` put an
