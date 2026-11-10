@@ -318,7 +318,9 @@ The space is a display stop, so columns align in proportional fonts too."
 Insert nothing when the last field is empty."
   (let ((value (car (last fields))))
     (unless (string-empty-p (or value ""))
-      (let ((line (scooter-list--pad-to "" 5)))
+      ;; Plain spaces first: a display stretch where a fold's hidden text
+      ;; starts is still drawn, and would indent the line after the fold.
+      (let ((line (make-string 5 ?\s)))
         (cl-loop for text in (cons (propertize label 'font-lock-face 'scooter-list-dim) (butlast fields))
                  for col in '(16 26 42)
                  do (setq line (scooter-list--pad-to (concat line text) col)))

@@ -376,8 +376,10 @@ A blocker is done once in the board's last stage, wherever it was read."
       (scooter-kanban--related-line "blocking" (alist-get 'blocking details))
       (let ((desc (string-trim (or (alist-get 'description details) ""))))
         (unless (string-empty-p desc)
-          (scooter-list--insert-detail "description" "")
-          (insert (replace-regexp-in-string "^" "        " desc) "\n"))))
+          (let ((lines (split-string desc "\n")))
+            (scooter-list--insert-detail "description" (car lines))
+            (dolist (line (cdr lines))
+              (insert (make-string 16 ?\s) line "\n"))))))
     (scooter-list--insert-details server (plist-get card :conv))))
 
 (defun scooter-kanban--insert-card (board card)
