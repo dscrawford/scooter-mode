@@ -478,7 +478,7 @@ Insert nothing when the last field is empty."
   (let ((e (scooter-list--at-point)))
     (scooter-request (car e) "PATCH" (format "/conversations/%s/starred" (scooter-list--id e))
                      `((starred . ,(if (eq (alist-get 'starred (cdr e)) t) :json-false t))))
-    (scooter-list-refresh)))
+    (revert-buffer)))
 
 (defun scooter-list-retitle (title)
   "Set the conversation at point's TITLE."
@@ -486,7 +486,7 @@ Insert nothing when the last field is empty."
   (let ((e (scooter-list--at-point)))
     (scooter-request (car e) "PATCH" (format "/conversations/%s/title" (scooter-list--id e))
                      `((title . ,title)))
-    (scooter-list-refresh)))
+    (revert-buffer)))
 
 (defun scooter-list-cancel ()
   "Stop the run of the conversation at point."
@@ -500,7 +500,7 @@ Insert nothing when the last field is empty."
   (interactive)
   (let ((e (scooter-list--at-point)))
     (scooter-request (car e) "POST" (format "/conversations/%s/suspend" (scooter-list--id e)))
-    (scooter-list-refresh)))
+    (revert-buffer)))
 
 (defun scooter-list--url (entry &optional files)
   "Return ENTRY's browser URL, or its files viewer when FILES."

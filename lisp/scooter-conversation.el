@@ -25,10 +25,11 @@
 
 (defun scooter-conversation-target (&optional ask)
   "Return (SERVER ID) for the conversation these commands act on.
-That is this Scooter shell's, the row at point in `scooter-list', or,
+That is this Scooter shell's, the row or card at point in `scooter-list'
+or `scooter-kanban', or,
 with ASK or anywhere else, one read from a server."
   (or (and (not ask) (scooter-agent-shell-conversation))
-      (and (not ask) (derived-mode-p 'scooter-list-mode)
+      (and (not ask) (derived-mode-p 'scooter-list-mode 'scooter-kanban-mode)
            (let ((e (scooter-list--at-point)))
              (list (car e) (scooter-list--id e))))
       (let ((server (scooter-current-server ask)))
