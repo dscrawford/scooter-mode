@@ -26,10 +26,12 @@
 (require 'scooter-auth)
 (require 'scooter-list)
 (require 'scooter-agent-shell)
-(declare-function scooter-find-file "scooter-tramp")
+(autoload 'scooter-find-file "scooter-tramp" nil t)
 (declare-function scooter-sandbox "scooter-conversation")
 (declare-function scooter-web-services "scooter-conversation")
 (declare-function scooter-links "scooter-conversation")
+(autoload 'scooter-kanban "scooter-kanban" nil t)
+(autoload 'scooter-kanban-file "scooter-kanban" nil t)
 
 (declare-function agent-shell-start "agent-shell")
 
@@ -128,13 +130,15 @@
   "Scooter commands."
   [["Conversations"
     ("l" "List" scooter-list)
+    ("K" "Kanban boards" scooter-kanban)
     ("o" "Open" scooter-open)
     ("c" "New" scooter-new)
     ("f" "Find file" scooter-find-file)]
    ["This conversation"
     ("b" "Sandbox" scooter-sandbox)
     ("w" "Web services" scooter-web-services)
-    ("k" "Links" scooter-links)]
+    ("k" "Links" scooter-links)
+    ("M" "Put on a board" scooter-kanban-file)]
    ["From here"
     ("r" "New from region" scooter-new-from-region)
     ("R" "Send region" scooter-send-region)
@@ -151,6 +155,8 @@
   :doc "Scooter commands; bind it to a prefix."
   "s" #'scooter-dispatch
   "l" #'scooter-list
+  "K" #'scooter-kanban
+  "M" #'scooter-kanban-file
   "o" #'scooter-open
   "c" #'scooter-new
   "f" #'scooter-find-file

@@ -98,6 +98,61 @@ cookie is saved to auth-source as with plain `cookie`. `C-c s s B`
   key from the desktop keyring, and driving one over DevTools needs a
   WebSocket client Emacs doesn't have built in.
 
+### Kanban boards
+
+`C-c s K` (`scooter-kanban`) shows the boards of the server's kanban
+contrib, the same boards as the web UI's /boards:
+
+```
+home  https://scooter.example.org  1 board
+Work  5 cards
+  Design (3)
+    ● Write docs
+      You · 2h ago
+    ● Fix login HIGH dotfiles
+      PR #4 open, CI green · Agent · 5m ago · Blocked by 1
+  In progress (1)
+    ! Kanban in Emacs URGENT
+      No status yet
+  Done (1)
+  Tags and skills (1, 1)
+```
+
+Each stage lists its cards in board order: status icon, title, High or
+Urgent, tags, the agent's note, who moved it last and what still blocks
+it. Boards, stages and cards fold like an outline: `TAB` folds the one at
+point, `M-2` folds everything to boards, `M-3` to stages and `M-4` shows
+every card; a card folds open to its description, blockers, links and URL.
+`RET` opens the card's conversation in agent-shell in another window and
+keeps the board in view (`o` shows it without leaving the board, `]`/`[`
+step through the cards). From a Scooter shell, `scooter-kanban` shows the
+board beside it with point on that conversation's card.
+
+To open each card's chat in a tab of its own instead, set
+`scooter-kanban-open-in` to `tab`. The tab is named after the card, `RET`
+on the card again switches to it, and closing the tab closes the chat's
+shell (the conversation stays on the server; `RET` reopens it). `o` opens
+the tab in the background, and `C-c C-k` from a chat goes back to the
+board's tab. `]`/`[` still show cards in a window, so stepping through
+them doesn't open a tab for each.
+
+- Cards: `>`/`<` next or previous stage, `m` any stage, `M-<up>`/`M-<down>`
+  reorder, `c` new conversation in the stage at point, `a` put an
+  existing conversation there, `u` take it off the board, `#` tags (new
+  names make tags), `P` priority, `e` description, `x`/`X` add or remove a
+  blocker. A move to another stage tells the agent, as the web UI does
+  (`scooter-kanban-announce-moves`).
+- The list's conversation keys work on cards too: `s` star, `t` retitle,
+  `k` stop, `z` suspend, `C-c C-b` sandbox, `v` web services, `l` links,
+  `b` browser, `w` copy URL.
+- Boards: `N` new, `R` rename, `D` delete; `E` edits the stages, tags and
+  skills of the board at point. `?` lists everything.
+- `C-c s M` (`scooter-kanban-file`) puts the current shell's conversation
+  on a board.
+
+The buffer follows `/conversations/events`, and redraws when a change
+arrives while it is in view (or as soon as it comes back into view).
+
 ### Sandbox files over Tramp
 
 `C-c s f` (`scooter-find-file`) opens a file in a conversation's sandbox:

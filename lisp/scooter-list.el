@@ -21,10 +21,10 @@
 
 (declare-function scooter-open "scooter" (server id))
 (declare-function scooter-new "scooter" (server text &optional model))
-(declare-function scooter-dispatch "scooter")
-(declare-function scooter-sandbox "scooter-conversation")
-(declare-function scooter-web-services "scooter-conversation")
-(declare-function scooter-links "scooter-conversation")
+(autoload 'scooter-dispatch "scooter" nil t)
+(autoload 'scooter-sandbox "scooter-conversation" nil t)
+(autoload 'scooter-web-services "scooter-conversation" nil t)
+(autoload 'scooter-links "scooter-conversation" nil t)
 (declare-function evil-set-initial-state "evil-core" (mode state))
 
 (defface scooter-list-awaiting '((t :inherit (warning bold)))
@@ -318,7 +318,9 @@ The space is a display stop, so columns align in proportional fonts too."
 Insert nothing when the last field is empty."
   (let ((value (car (last fields))))
     (unless (string-empty-p (or value ""))
-      (let ((line (scooter-list--pad-to "" 5)))
+      ;; Plain spaces first: a display stretch where a fold's hidden text
+      ;; starts is still drawn, and would indent the line after the fold.
+      (let ((line (make-string 5 ?\s)))
         (cl-loop for text in (cons (propertize label 'font-lock-face 'scooter-list-dim) (butlast fields))
                  for col in '(16 26 42)
                  do (setq line (scooter-list--pad-to (concat line text) col)))
@@ -478,7 +480,7 @@ Insert nothing when the last field is empty."
   (let ((e (scooter-list--at-point)))
     (scooter-request (car e) "PATCH" (format "/conversations/%s/starred" (scooter-list--id e))
                      `((starred . ,(if (eq (alist-get 'starred (cdr e)) t) :json-false t))))
-    (scooter-list-refresh)))
+    (revert-buffer)))
 
 (defun scooter-list-retitle (title)
   "Set the conversation at point's TITLE."
@@ -486,7 +488,7 @@ Insert nothing when the last field is empty."
   (let ((e (scooter-list--at-point)))
     (scooter-request (car e) "PATCH" (format "/conversations/%s/title" (scooter-list--id e))
                      `((title . ,title)))
-    (scooter-list-refresh)))
+    (revert-buffer)))
 
 (defun scooter-list-cancel ()
   "Stop the run of the conversation at point."
@@ -500,7 +502,7 @@ Insert nothing when the last field is empty."
   (interactive)
   (let ((e (scooter-list--at-point)))
     (scooter-request (car e) "POST" (format "/conversations/%s/suspend" (scooter-list--id e)))
-    (scooter-list-refresh)))
+    (revert-buffer)))
 
 (defun scooter-list--url (entry &optional files)
   "Return ENTRY's browser URL, or its files viewer when FILES."
