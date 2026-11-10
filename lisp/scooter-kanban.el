@@ -47,6 +47,7 @@
 (declare-function scooter-kanban-delete-board "scooter-kanban-edit")
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (defvar agent-shell-display-action)
+(declare-function agent-shell-subscribe-to "agent-shell")
 
 (defcustom scooter-kanban-lane-limit 50
   "Cards a stage shows at first, the most recently active; `+' shows more."
@@ -721,12 +722,27 @@ CONVERSATION is (SERVER ID) to go to instead."
   "Show SERVER's conversation ID in another window, selecting it when SELECT.
 A shell already open on it is reused."
   (require 'agent-shell)
-  (let ((board (selected-window)))
-    (if-let* ((buf (scooter-kanban--shell server id)))
+  (let ((board (selected-window))
+        (buf (scooter-kanban--shell server id)))
+    (if buf
         (display-buffer buf scooter-kanban-display-action)
       (let ((agent-shell-display-action scooter-kanban-display-action))
-        (scooter-open server id)))
-    (unless select
+        (setq buf (scooter-open server id)))
+      ;; agent-shell may show the shell only once its session is picked,
+      ;; after this binding is gone; showing it now, it just selects it then.
+      (when (buffer-live-p buf)
+        (unless (get-buffer-window buf)
+          (when (window-live-p board) (select-window board))
+          (display-buffer buf scooter-kanban-display-action))
+        (unless select
+          (agent-shell-subscribe-to
+           :shell-buffer buf :event 'session-selected
+           :on-event (lambda (_)
+                       (run-at-time 0 nil (lambda ()
+                                            (when (window-live-p board)
+                                              (select-window board)))))))))
+    (if (and select (buffer-live-p buf) (get-buffer-window buf))
+        (select-window (get-buffer-window buf))
       (when (window-live-p board) (select-window board)))))
 
 (defun scooter-kanban-visit ()
