@@ -147,6 +147,47 @@ them doesn't open a tab for each.
   `b` browser, `w` copy URL.
 - Boards: `N` new, `R` rename, `D` delete; `E` edits the stages, tags and
   skills of the board at point. `?` lists everything.
+
+After each server's boards come its **Skills**, your personal skills
+(Settings → Skills on the web: a name, when to use it, and markdown
+instructions, loaded by every conversation of yours), and its **Hooks**, the
+deployment's hooks with the ones you may turn off:
+
+```
+Skills  2
+  ● acme-conventions
+    Conventions for acme/app. Use when working in it or reviewing its PRs.
+  ○ old-notes  disabled
+Hooks  1
+  ● finish-or-ask  Stop  required
+    Send the agent back to work instead of ending.
+```
+
+A skill is edited as the file the agent will see, in a window of its own:
+front matter with its name and details, then the markdown body. `i` starts
+a new personal skill on the server at point, and `RET` or `e` on a skill
+opens it:
+
+```
+---
+name: acme-conventions
+description: Conventions for acme/app. Use when working in it or reviewing its PRs.
+enabled: true
+---
+
+# acme/app
+
+Run `just ci` before opening a PR.
+```
+
+`C-c C-c` submits it, creating or updating the skill from the front matter
+and body (`C-c C-k` discards; the buffer stays open if the server refuses
+it, with its reason). A board's skills (`E s` to add, `e` on one to edit)
+open the same way, with only a `name` line, since every card on the board
+gets them. `!` enables or disables the personal skill or hook at point
+(`RET` on a hook does too); `E K` deletes a personal skill. The server has
+no way to write hooks, so Emacs only lists and toggles them. Changes apply
+to conversations started afterwards.
 - `C-c s M` (`scooter-kanban-file`) puts the current shell's conversation
   on a board.
 
