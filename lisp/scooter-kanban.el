@@ -20,6 +20,10 @@
 ;; Boards, stages and cards come from the kanban contrib through
 ;; /contrib-api/kanban, and refresh when /conversations/events reports a
 ;; change.
+;;
+;; After a server's boards come the user's own skills (/user-skills, the
+;; settings page's Skills) and the deployment's hooks (/user-hooks), with
+;; the commands in scooter-kanban-edit.el to write, toggle and delete them.
 
 ;;; Code:
 
@@ -42,6 +46,11 @@
 (declare-function scooter-links "scooter-conversation")
 (autoload 'scooter-kanban-edit-dispatch "scooter-kanban-edit" nil t)
 (autoload 'scooter-kanban-edit-description "scooter-kanban-edit" nil t)
+(autoload 'scooter-kanban-edit-at-point "scooter-kanban-edit" nil t)
+(autoload 'scooter-kanban-toggle "scooter-kanban-edit" nil t)
+(autoload 'scooter-kanban-new-user-skill "scooter-kanban-edit" nil t)
+(autoload 'scooter-kanban-edit-user-skill "scooter-kanban-edit" nil t)
+(autoload 'scooter-kanban-delete-user-skill "scooter-kanban-edit" nil t)
 (autoload 'scooter-kanban-new-board "scooter-kanban-edit" nil t)
 (autoload 'scooter-kanban-rename-board "scooter-kanban-edit" nil t)
 (autoload 'scooter-kanban-delete-board "scooter-kanban-edit" nil t)
@@ -153,6 +162,12 @@ conversation's shell; the conversation itself stays on the server.
 (defvar-local scooter-kanban--data nil
   "The last rendered list of (SERVER . BOARDS-OR-ERROR).")
 
+(defvar-local scooter-kanban--user nil
+  "Each server's personal skills and hooks, as (SERVER . PLIST).
+PLIST has :skills, the /user-skills reply, and :hooks, the /user-hooks
+reply; either is a string when the request failed, or nil when the
+server has no such route.")
+
 (defvar-local scooter-kanban--limits nil
   "Stage id to the number of cards it shows, once `+' raised it.")
 
@@ -235,6 +250,38 @@ conversation's shell; the conversation itself stays on the server.
        (error-message-string err)))
     (error (error-message-string err))))
 
+;;;; Personal skills and hooks
+
+;; The server's settings page keeps personal skills (name, when to use
+;; it, markdown body, enabled) at /user-skills and the deployment's
+;; hooks, with each user's opt-outs, at /user-hooks.  Both are per user,
+;; not per board, so they show under the server.
+
+(defun scooter-kanban--user-get (server path)
+  "GET PATH on SERVER: the reply, nil when SERVER lacks it, else an error string."
+  (condition-case err
+      (scooter-request server "GET" path)
+    (scooter-http-error
+     (let ((msg (error-message-string err)))
+       (cond ((string-match-p ": 404 " msg) nil)
+             ((string-match-p ": 501 " msg) "not configured on this server")
+             (t msg))))
+    (error (error-message-string err))))
+
+(defun scooter-kanban--fetch-user (server)
+  "Return SERVER's personal skills and hooks as a plist."
+  (list :skills (scooter-kanban--user-get server "/user-skills")
+        :hooks (scooter-kanban--user-get server "/user-hooks")))
+
+(defun scooter-kanban-user-skills (server)
+  "Return SERVER's personal skills as the kanban buffer last read them."
+  (let ((reply (plist-get (alist-get server scooter-kanban--user) :skills)))
+    (and (listp reply) (alist-get 'skills reply))))
+
+(defun scooter-kanban-enabled-p (item)
+  "Non-nil when ITEM, a skill or hook alist, is enabled."
+  (eq (alist-get 'enabled item) t))
+
 (defun scooter-kanban-card-id (card)
   "Return CARD's conversation id."
   (alist-get 'id (plist-get card :conv)))
@@ -297,6 +344,16 @@ A blocker is done once in the board's last stage, wherever it was read."
 (defclass scooter-kanban-tag-section (magit-section) ())
 (defclass scooter-kanban-skill-section (magit-section) ())
 (defclass scooter-kanban-settings-section (magit-section) ())
+(defclass scooter-kanban-user-section (magit-section) ())
+
+;; A personal skill or a hook; the value is its id, so point finds it
+;; again after a redraw, and the row holds what the server sent.
+(defclass scooter-kanban-user-skill-section (magit-section)
+  ((server :initarg :server :initform nil)
+   (skill :initarg :skill :initform nil)))
+(defclass scooter-kanban-hook-section (magit-section)
+  ((server :initarg :server :initform nil)
+   (hook :initarg :hook :initform nil)))
 
 ;; A card is a `scooter-conversation-section', so the list's commands
 ;; (star, retitle, stop, sandbox, links, ...) act on it too.
@@ -450,12 +507,91 @@ A blocker is done once in the board's last stage, wherever it was read."
       (scooter-kanban--insert-settings board)
       (insert "\n"))))
 
-(defun scooter-kanban--render (data)
-  "Render DATA, a list of (SERVER . BOARDS-OR-ERROR)."
+(defun scooter-kanban--on-off (on)
+  "Return the mark for something ON or off."
+  (if on (propertize "●" 'font-lock-face 'scooter-list-running)
+    (propertize "○" 'font-lock-face 'scooter-list-idle)))
+
+(defun scooter-kanban--insert-user-skill (server skill builtin)
+  "Insert SERVER's personal SKILL; BUILTIN names the deployment's skills."
+  (let ((name (alist-get 'name skill))
+        (description (string-trim (or (alist-get 'description skill) ""))))
+    (magit-insert-section (scooter-kanban-user-skill-section (alist-get 'id skill) nil
+                                                              :server server :skill skill)
+      (magit-insert-heading
+        (concat "  " (scooter-kanban--on-off (scooter-kanban-enabled-p skill)) " "
+                (propertize name 'font-lock-face 'bold)
+                (if (scooter-kanban-enabled-p skill) ""
+                  (propertize "  disabled" 'font-lock-face 'scooter-list-dim))
+                (if (member name builtin)
+                    (propertize "  replaces a built-in" 'font-lock-face 'scooter-kanban-high)
+                  "")
+                (if (string-empty-p description) ""
+                  (concat "\n    " (propertize (car (split-string description "\n"))
+                                               'font-lock-face 'scooter-list-dim))))))))
+
+(defun scooter-kanban--insert-hook (server hook)
+  "Insert SERVER's HOOK."
+  (let ((description (string-trim (or (alist-get 'description hook) ""))))
+    (magit-insert-section (scooter-kanban-hook-section (alist-get 'id hook) nil
+                                                       :server server :hook hook)
+      (magit-insert-heading
+        (concat "  " (scooter-kanban--on-off (scooter-kanban-enabled-p hook)) " "
+                (propertize (alist-get 'id hook) 'font-lock-face 'bold)
+                (propertize (format "  %s" (alist-get 'event hook)) 'font-lock-face 'scooter-list-model)
+                (cond ((not (eq (alist-get 'userCanDisable hook) t))
+                       (propertize "  required" 'font-lock-face 'scooter-list-dim))
+                      ((scooter-kanban-enabled-p hook) "")
+                      (t (propertize "  off" 'font-lock-face 'scooter-list-dim)))
+                (if (string-empty-p description) ""
+                  (concat "\n    " (propertize (car (split-string description "\n"))
+                                               'font-lock-face 'scooter-list-dim))))))))
+
+(defun scooter-kanban--insert-user (server user)
+  "Insert SERVER's personal skills and hooks from USER, its fetched plist.
+A server without the routes shows neither section."
+  (let ((skills (plist-get user :skills))
+        (hooks (plist-get user :hooks)))
+    (when skills
+      (magit-insert-section (scooter-kanban-user-section (cons 'skills server))
+        (magit-insert-heading
+          (propertize "Skills" 'font-lock-face 'scooter-kanban-board)
+          (propertize (if (stringp skills) "" (format "  %d" (length (alist-get 'skills skills))))
+                      'font-lock-face 'scooter-list-dim))
+        (cond
+         ((stringp skills)
+          (insert "  " (propertize (concat "Personal skills: " skills) 'font-lock-face 'error) "\n"))
+         ((null (alist-get 'skills skills))
+          (insert (propertize "  No personal skills yet; i writes one.\n" 'font-lock-face 'scooter-list-dim)))
+         (t (dolist (skill (alist-get 'skills skills))
+              (scooter-kanban--insert-user-skill server skill (alist-get 'builtinNames skills)))))
+        (insert "\n")))
+    (when hooks
+      (magit-insert-section (scooter-kanban-user-section (cons 'hooks server) t)
+        (magit-insert-heading
+          (propertize "Hooks" 'font-lock-face 'scooter-kanban-board)
+          (propertize (if (stringp hooks) "" (format "  %d" (length (alist-get 'hooks hooks))))
+                      'font-lock-face 'scooter-list-dim))
+        (cond
+         ((stringp hooks)
+          (insert "  " (propertize (concat "Hooks: " hooks) 'font-lock-face 'error) "\n"))
+         ((null (alist-get 'hooks hooks))
+          (insert (propertize "  The deployment has no hooks.\n" 'font-lock-face 'scooter-list-dim)))
+         (t (dolist (hook (alist-get 'hooks hooks))
+              (scooter-kanban--insert-hook server hook))
+            (unless (eq (alist-get 'configurable hooks) t)
+              (insert (propertize "  Hooks can't be turned off on this server.\n"
+                                  'font-lock-face 'scooter-list-dim)))))
+        (insert "\n")))))
+
+(defun scooter-kanban--render (data &optional user)
+  "Render DATA, a list of (SERVER . BOARDS-OR-ERROR).
+USER is each server's personal skills and hooks, as (SERVER . PLIST)."
   (let ((inhibit-read-only t)
         (pos (point))
         (here (scooter-kanban--point-ident)))
     (setq scooter-kanban--data data)
+    (setq scooter-kanban--user user)
     (erase-buffer)
     (magit-insert-section (root)
       (pcase-dolist (`(,server . ,boards) data)
@@ -466,11 +602,12 @@ A blocker is done once in the board's last stage, wherever it was read."
             (propertize (if (stringp boards) "" (format "  %d board%s" (length boards)
                                                         (if (= (length boards) 1) "" "s")))
                         'font-lock-face 'scooter-list-dim))
+          ;; Each board ends with a blank line; the other two cases need one added.
           (cond
-           ((stringp boards) (insert "  " (propertize boards 'font-lock-face 'error) "\n"))
-           ((null boards) (insert (propertize "  No boards yet; N makes one.\n" 'font-lock-face 'scooter-list-dim)))
+           ((stringp boards) (insert "  " (propertize boards 'font-lock-face 'error) "\n\n"))
+           ((null boards) (insert (propertize "  No boards yet; N makes one.\n\n" 'font-lock-face 'scooter-list-dim)))
            (t (mapc #'scooter-kanban--insert-board boards)))
-          (insert "\n"))))
+          (scooter-kanban--insert-user server (alist-get server user)))))
     (unless (and here (scooter-kanban--goto-ident here))
       (goto-char (min pos (point-max))))))
 
@@ -504,7 +641,9 @@ A blocker is done once in the board's last stage, wherever it was read."
   "u" #'scooter-kanban-remove
   "#" #'scooter-kanban-set-tags
   "P" #'scooter-kanban-set-priority
-  "e" #'scooter-kanban-edit-description
+  "e" #'scooter-kanban-edit-at-point
+  "i" #'scooter-kanban-new-user-skill
+  "!" #'scooter-kanban-toggle
   "x" #'scooter-kanban-add-blocker
   "X" #'scooter-kanban-remove-blocker
   "+" #'scooter-kanban-more
@@ -541,7 +680,7 @@ A blocker is done once in the board's last stage, wherever it was read."
     ("o" "Show chat" scooter-kanban-display)
     ("]" "Next card's chat" scooter-kanban-next-card)
     ("[" "Previous card's chat" scooter-kanban-previous-card)
-    ("e" "Description" scooter-kanban-edit-description)
+    ("e" "Edit description, or skill at point" scooter-kanban-edit-at-point)
     ("P" "Priority" scooter-kanban-set-priority)
     ("#" "Tags" scooter-kanban-set-tags)
     ("x" "Add blocker" scooter-kanban-add-blocker)
@@ -571,6 +710,9 @@ A blocker is done once in the board's last stage, wherever it was read."
     ("D" "Delete board" scooter-kanban-delete-board)
     ("g" "Refresh" scooter-kanban-refresh)
     ("S" "More Scooter commands" scooter-dispatch)]
+   ["Skills and hooks"
+    ("i" "New personal skill" scooter-kanban-new-user-skill)
+    ("!" "Enable/disable at point" scooter-kanban-toggle)]
    ["Fold"
     ("TAB" "This one" magit-section-toggle)
     ("M-2" "To boards" magit-section-show-level-2-all)
@@ -630,7 +772,8 @@ CONVERSATION is (SERVER ID) to go to instead."
   (interactive)
   (setq scooter-kanban--stale nil)
   (scooter-kanban--render
-   (mapcar (lambda (s) (cons s (scooter-kanban--fetch s))) scooter-kanban--servers)))
+   (mapcar (lambda (s) (cons s (scooter-kanban--fetch s))) scooter-kanban--servers)
+   (mapcar (lambda (s) (cons s (scooter-kanban--fetch-user s))) scooter-kanban--servers)))
 
 (defun scooter-kanban--visible-p (buf)
   "Non-nil when BUF shows in some window."
@@ -721,6 +864,23 @@ CONVERSATION is (SERVER ID) to go to instead."
     (while (and s (not (cl-typep s 'scooter-kanban-server-section)))
       (setq s (oref s parent)))
     (if s (oref s value) (scooter-current-server))))
+
+(defun scooter-kanban-section-of (class)
+  "Return the CLASS section holding point, or nil."
+  (let ((s (magit-current-section)))
+    (while (and s (not (cl-typep s class)))
+      (setq s (oref s parent)))
+    s))
+
+(defun scooter-kanban-user-skill-at-point ()
+  "Return (SERVER . SKILL) for the personal skill at point, or nil."
+  (when-let* ((s (scooter-kanban-section-of 'scooter-kanban-user-skill-section)))
+    (cons (oref s server) (oref s skill))))
+
+(defun scooter-kanban-hook-at-point ()
+  "Return (SERVER . HOOK) for the hook at point, or nil."
+  (when-let* ((s (scooter-kanban-section-of 'scooter-kanban-hook-section)))
+    (cons (oref s server) (oref s hook))))
 
 (defun scooter-kanban-read-stage (board prompt &optional exclude)
   "Read one of BOARD's stages with PROMPT, other than EXCLUDE; return its id."
@@ -882,6 +1042,8 @@ On a \"more\" line, show more of the stage; elsewhere fold the section."
   (let ((s (magit-current-section)))
     (cond
      ((cl-typep s 'scooter-kanban-more-section) (scooter-kanban-more))
+     ((scooter-kanban-user-skill-at-point) (scooter-kanban-edit-user-skill))
+     ((scooter-kanban-hook-at-point) (scooter-kanban-toggle))
      ((scooter-kanban--card-section)
       (let ((card (cdr (scooter-kanban-at-point))))
         (scooter-kanban-show-conversation (plist-get (car (scooter-kanban-at-point)) :server)
@@ -931,7 +1093,7 @@ set to `tab': stepping through cards shouldn't open a tab for each one."
     (setf (alist-get stage scooter-kanban--limits nil nil #'equal)
           (+ (or (alist-get stage scooter-kanban--limits nil nil #'equal) scooter-kanban-lane-limit)
              scooter-kanban-lane-limit))
-    (save-excursion (scooter-kanban--render scooter-kanban--data))))
+    (save-excursion (scooter-kanban--render scooter-kanban--data scooter-kanban--user))))
 
 ;;;; Moving cards
 

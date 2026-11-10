@@ -54,6 +54,18 @@
      '((description . "Make the board work.\nIn Emacs.") (priority . "high")
        (blocked_by . (((id . "c3") (title . "Kanban in Emacs") (stage . "In progress") (done . :false))))
        (blocking)))
+    (`("GET" "/user-skills")
+     '((skills . (((id . "u1") (name . "acme-conventions") (description . "Use in acme/app.\nAnd its PRs.")
+                   (body . "Run `just ci` before a PR.") (enabled . t))
+                  ((id . "u2") (name . "github-workflow") (description . "Old notes.")
+                   (body . "Push to main.") (enabled . :false))))
+       (builtinNames . ("github-workflow" "kanban"))))
+    (`("GET" "/user-hooks")
+     '((configurable . t)
+       (hooks . (((id . "finish-or-ask") (event . "Stop") (description . "Back to work instead of ending.")
+                  (userCanDisable . :false) (enabled . t))
+                 ((id . "lint") (event . "PostToolUse") (description . "Lint after edits.")
+                  (userCanDisable . t) (enabled . t))))))
     (_ nil)))
 
 (defmacro scooter-kanban-test-with-board (&rest body)
@@ -379,3 +391,140 @@
       (should (shown "Write docs"))
       (scooter-kanban-test--goto "Write docs")
       (should (oref (magit-current-section) hidden)))))
+
+;;;; Personal skills and hooks
+
+(defun scooter-kanban-test--edit-buffer (name)
+  "The edit buffer NAME, which the last command popped up."
+  (or (get-buffer name) (ert-fail (format "no buffer %s" name))))
+
+(ert-deftest scooter-kanban-test-renders-user-skills-and-hooks ()
+  (scooter-kanban-test-with-board
+    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+      ;; After the boards: each server's own skills, then its hooks.
+      (should (string-match-p "E edits stages, tags and skills\n\nSkills  2\n  ● acme-conventions\n    Use in acme/app.\n" text))
+      (should (string-match-p "  ○ github-workflow  disabled  replaces a built-in\n    Old notes.\n" text))
+      (should (string-match-p "Hooks  2\n  ● finish-or-ask  Stop  required\n    Back to work instead of ending.\n  ● lint  PostToolUse\n" text)))
+    ;; Hooks start folded; skills don't.
+    (scooter-kanban-test--goto "Hooks  2")
+    (should (oref (magit-current-section) hidden))
+    (scooter-kanban-test--goto "Skills  2")
+    (should-not (oref (magit-current-section) hidden))))
+
+(ert-deftest scooter-kanban-test-user-sections-follow-the-server ()
+  (let ((replies (symbol-function 'scooter-kanban-test--reply)))
+    (cl-letf (((symbol-function 'scooter-kanban-test--reply)
+               (lambda (method path body)
+                 (pcase path
+                   ("/user-skills" (signal 'scooter-http-error '("GET /user-skills: 501 {}")))
+                   ("/user-hooks" (signal 'scooter-http-error '("GET /user-hooks: 404 {}")))
+                   (_ (funcall replies method path body))))))
+      (scooter-kanban-test-with-board
+        (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+          (should (string-match-p "Skills\n  Personal skills: not configured on this server\n" text))
+          (should-not (string-match-p "Hooks" text)))))))
+
+(ert-deftest scooter-kanban-test-new-user-skill-is-a-file ()
+  (scooter-kanban-test-with-board
+    (scooter-kanban-test--goto "home  https")
+    (scooter-kanban-new-user-skill (scooter-kanban-server-at-point))
+    (with-current-buffer (scooter-kanban-test--edit-buffer "*scooter-skill: new@home*")
+      (should (equal (buffer-string) "---\nname: \ndescription: \nenabled: true\n---\n\n"))
+      (erase-buffer)
+      (insert "---\nname: acme-release\ndescription: Shipping acme/app.\nenabled: true\n---\n\n# Release\n\nTag it.\n")
+      (scooter-kanban-text-save))
+    (should-not (get-buffer "*scooter-skill: new@home*"))
+    (should (equal (scooter-kanban-test--writes)
+                   '(("POST" "/user-skills"
+                      ((name . "acme-release") (description . "Shipping acme/app.")
+                       (body . "# Release\n\nTag it.") (enabled . t))))))))
+
+(ert-deftest scooter-kanban-test-new-user-skill-needs-its-front-matter ()
+  (scooter-kanban-test-with-board
+    (scooter-kanban-new-user-skill 'home)
+    (with-current-buffer (scooter-kanban-test--edit-buffer "*scooter-skill: new@home*")
+      (unwind-protect
+          (progn
+            (erase-buffer)
+            (insert "---\nname: \ndescription: Shipping.\n---\nBody")
+            (should-error (scooter-kanban-text-save) :type 'user-error)
+            (erase-buffer)
+            (insert "Just a body")
+            (should-error (scooter-kanban-text-save) :type 'user-error)
+            ;; The buffer stays, with its text, for another try.
+            (should (equal (buffer-string) "Just a body")))
+        (kill-buffer)))
+    (should-not (scooter-kanban-test--writes))))
+
+(ert-deftest scooter-kanban-test-edit-user-skill-at-point ()
+  (scooter-kanban-test-with-board
+    (scooter-kanban-test--goto "github-workflow")
+    (scooter-kanban-edit-at-point)
+    (with-current-buffer (scooter-kanban-test--edit-buffer "*scooter-skill: github-workflow@home*")
+      (should (equal (buffer-string)
+                     "---\nname: github-workflow\ndescription: Old notes.\nenabled: false\n---\n\nPush to main."))
+      (goto-char (point-max))
+      (insert " Never.")
+      (scooter-kanban-text-save))
+    (should (equal (scooter-kanban-test--writes)
+                   '(("PATCH" "/user-skills/u2"
+                      ((name . "github-workflow") (description . "Old notes.")
+                       (body . "Push to main. Never.") (enabled . :json-false))))))))
+
+(ert-deftest scooter-kanban-test-toggle-user-skill-and-hook ()
+  (scooter-kanban-test-with-board
+    (scooter-kanban-test--goto "github-workflow")
+    (scooter-kanban-toggle)
+    (should (equal (scooter-kanban-test--writes)
+                   '(("PATCH" "/user-skills/u2" ((enabled . t))))))
+    (setq scooter-kanban-test--calls nil)
+    (scooter-kanban-test--goto "lint  PostToolUse")
+    (scooter-kanban-visit)
+    (should (equal (scooter-kanban-test--writes)
+                   '(("PATCH" "/user-hooks/lint" ((enabled . :json-false))))))
+    (setq scooter-kanban-test--calls nil)
+    (scooter-kanban-test--goto "finish-or-ask")
+    (should-error (scooter-kanban-toggle) :type 'user-error)
+    (should-not (scooter-kanban-test--writes))
+    (scooter-kanban-test--goto "Write docs")
+    (should-error (scooter-kanban-toggle) :type 'user-error)))
+
+(ert-deftest scooter-kanban-test-delete-user-skill ()
+  (scooter-kanban-test-with-board
+    (scooter-kanban-test--goto "acme-conventions")
+    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+      (scooter-kanban-delete-user-skill))
+    (should (equal (scooter-kanban-test--writes) '(("DELETE" "/user-skills/u1" nil))))))
+
+(ert-deftest scooter-kanban-test-board-skill-edits-as-a-file ()
+  (scooter-kanban-test-with-board
+    (scooter-kanban-test--goto "skill  Repos")
+    (scooter-kanban-edit-at-point)
+    (with-current-buffer (scooter-kanban-test--edit-buffer "*scooter-skill: Repos (Work)*")
+      (should (equal (buffer-string) "---\nname: Repos\n---\n\nUse the fork."))
+      (erase-buffer)
+      (insert "---\nname: Repositories\n---\nUse the fork, always.")
+      (scooter-kanban-text-save))
+    (should (equal (alist-get 'skills (nth 2 (car (scooter-kanban-test--writes))))
+                   [((body . "Use the fork, always.") (name . "Repositories") (id . "k1"))]))
+    (setq scooter-kanban-test--calls nil)
+    (scooter-kanban-test--goto "Work  5 cards")
+    (scooter-kanban-add-skill)
+    (with-current-buffer (scooter-kanban-test--edit-buffer "*scooter-skill: new (Work)*")
+      (erase-buffer)
+      (insert "---\nname: Shipping\n---\nOpen a PR.")
+      (scooter-kanban-text-save))
+    (should (equal (alist-get 'skills (nth 2 (car (scooter-kanban-test--writes))))
+                   [((id . "k1") (name . "Repos") (body . "Use the fork.")) ((name . "Shipping") (body . "Open a PR."))]))))
+
+(ert-deftest scooter-kanban-test-front-matter-round-trips ()
+  (should (equal (scooter-kanban-edit-parse "---\nname: a-b\ndescription: When x: y.\nenabled: false\n---\n\n# A\n\nBody.\n")
+                 '((("name" . "a-b") ("description" . "When x: y.") ("enabled" . "false")) . "# A\n\nBody.")))
+  (should (equal (scooter-kanban-edit-parse "---\n---\nBody") '(nil . "Body")))
+  (should (equal (scooter-kanban-edit-parse "No front matter\n") '(nil . "No front matter")))
+  (should (equal (scooter-kanban-edit-parse "---\nname: only\n---") '((("name" . "only")) . "")))
+  (should (equal (scooter-kanban-edit-front-matter '(("name" . "x") ("enabled" . "true")))
+                 "---\nname: x\nenabled: true\n---\n\n"))
+  (should (scooter-kanban-edit-true-p nil))
+  (should (scooter-kanban-edit-true-p "True"))
+  (should-not (scooter-kanban-edit-true-p " false ")))

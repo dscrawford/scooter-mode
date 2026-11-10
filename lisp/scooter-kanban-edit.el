@@ -9,8 +9,14 @@
 ;; add, rename, reorder and delete its stages and tags; write its skills,
 ;; the notes every agent on the board reads.  A board's stages, tags and
 ;; skills save together, so each command sends the whole layout as it
-;; should end up, as the web UI's Edit board does.  Also the buffer that
-;; edits a card's description or a skill's text.
+;; should end up, as the web UI's Edit board does.
+;;
+;; Also the user's personal skills (the settings page's Skills: a name,
+;; when to use it, and markdown instructions) and the deployment's hooks,
+;; which they can turn off.  A skill, personal or a board's, is edited as
+;; a file: front matter with its name and details over the markdown body,
+;; in a buffer of its own; C-c C-c submits it.  A card's description is
+;; the same buffer without the front matter.
 
 ;;; Code:
 
@@ -18,6 +24,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'transient)
+(require 'url-util)
 (require 'scooter-kanban)
 
 ;;;; Boards
@@ -228,23 +235,74 @@ PROMPT reads it by name."
   "C-c C-k" #'scooter-kanban-text-cancel)
 
 (define-derived-mode scooter-kanban-text-mode text-mode "Scooter Text"
-  "Edit a card's description or a board skill; \\[scooter-kanban-text-save] saves."
+  "Edit a card's description or a skill; \\[scooter-kanban-text-save] saves."
   (setq-local header-line-format
               (substitute-command-keys
                "\\<scooter-kanban-text-mode-map>Markdown.  \\[scooter-kanban-text-save] saves, \\[scooter-kanban-text-cancel] cancels")))
 
 (defun scooter-kanban-edit-text (name text on-save)
-  "Edit TEXT in a buffer called NAME; ON-SAVE gets the text when saved."
-  (let ((buf (generate-new-buffer name)))
+  "Edit TEXT in a buffer called NAME; ON-SAVE gets the text when saved.
+An existing buffer called NAME is shown again rather than replaced."
+  (let ((buf (get-buffer-create name)))
     (with-current-buffer buf
-      (if (fboundp 'markdown-mode)
-          (progn (funcall 'markdown-mode) (scooter-kanban-text-mode-keys))
-        (scooter-kanban-text-mode))
-      (insert (or text ""))
-      (goto-char (point-min))
-      (set-buffer-modified-p nil)
+      (unless (and scooter-kanban-edit--on-save (buffer-modified-p))
+        (erase-buffer)
+        (if (fboundp 'markdown-mode)
+            (progn (funcall 'markdown-mode) (scooter-kanban-text-mode-keys))
+          (scooter-kanban-text-mode))
+        (insert (or text ""))
+        (goto-char (point-min))
+        (set-buffer-modified-p nil))
       (setq scooter-kanban-edit--on-save on-save))
     (pop-to-buffer buf)))
+
+;;;; Files: front matter over a body
+
+;; A skill is edited as the file the agent will see: `---' lines around
+;; its fields, then the markdown body.
+
+(defun scooter-kanban-edit-front-matter (fields)
+  "Return FIELDS, an alist of (KEY . VALUE) strings, as front matter."
+  (concat "---\n"
+          (mapconcat (lambda (f) (format "%s: %s\n" (car f) (or (cdr f) ""))) fields "")
+          "---\n\n"))
+
+(defun scooter-kanban-edit-parse (text)
+  "Split TEXT into (FIELDS . BODY).
+FIELDS are the front matter's (KEY . VALUE) strings, nil when TEXT has
+none; BODY is the rest, trimmed."
+  (if (string-match "\\`---[ \t]*\n\\(\\(?:.*\n\\)*?\\)---[ \t]*\\(?:\n\\|\\'\\)" text)
+      ;; Take both pieces before the per-line matches clobber the match data.
+      (let ((head (match-string 1 text))
+            (body (string-trim (substring text (match-end 0)))))
+        (cons (delq nil (mapcar (lambda (line)
+                                  (when (string-match "\\`\\([A-Za-z0-9_-]+\\):[ \t]*\\(.*\\)\\'" line)
+                                    (cons (match-string 1 line) (string-trim (match-string 2 line)))))
+                                (split-string head "\n" t)))
+              body))
+    (cons nil (string-trim text))))
+
+(defun scooter-kanban-edit-field (fields key &optional required)
+  "Return KEY's value in FIELDS, \"\" when unset; signal when REQUIRED and empty."
+  (let ((value (or (cdr (assoc key fields)) "")))
+    (when (and required (string-empty-p value))
+      (user-error "The front matter needs a %s" key))
+    value))
+
+(defun scooter-kanban-edit-true-p (value)
+  "Non-nil when VALUE, a front matter string, says yes; unset is yes."
+  (not (member (downcase (string-trim (or value ""))) '("false" "no" "off" "0" "nil"))))
+
+(defun scooter-kanban-edit-file (name fields body on-save)
+  "Edit FIELDS and BODY as one file in a buffer called NAME.
+ON-SAVE gets the saved front matter, an alist of (KEY . VALUE) strings,
+and the body."
+  (scooter-kanban-edit-text
+   name (concat (scooter-kanban-edit-front-matter fields) (or body ""))
+   (lambda (text)
+     (pcase-let ((`(,fields . ,body) (scooter-kanban-edit-parse text)))
+       (unless fields (user-error "Keep the front matter: the lines between the two ---"))
+       (funcall on-save fields body)))))
 
 (defun scooter-kanban-text-mode-keys ()
   "Give a buffer in another major mode the text editor's keys."
@@ -283,35 +341,44 @@ PROMPT reads it by name."
        (scooter-kanban--after-change server id)
        (message "Saved the description")))))
 
-;;;; Skills
+;;;; Board skills
 
 (defun scooter-kanban-edit--skill (board)
   "Return the skill id at point on BOARD, or read one."
   (scooter-kanban-edit--at 'scooter-kanban-skill-section board :skills "Skill: "))
 
-(defun scooter-kanban-add-skill (name)
-  "Write a new skill NAME for every agent on the board at point."
-  (interactive (list (read-string "New skill's name: ")))
-  (let ((board (scooter-kanban-board-at-point)))
-    (when (string-empty-p (string-trim name)) (user-error "A skill needs a name"))
-    (scooter-kanban-edit-text
-     (format "*scooter-skill: %s*" name) ""
-     (lambda (body)
-       (scooter-kanban-edit--save
-        board (lambda (l) (plist-put l :skills (append (plist-get l :skills)
-                                                       (list `((name . ,name) (body . ,body)))))))))))
+(defun scooter-kanban-edit--board-skill-file (board skill)
+  "Edit BOARD's SKILL as a file, or a new one when SKILL is nil."
+  (let ((id (alist-get 'id skill)))
+    (scooter-kanban-edit-file
+     (format "*scooter-skill: %s (%s)*" (or (alist-get 'name skill) "new") (plist-get board :name))
+     `(("name" . ,(or (alist-get 'name skill) "")))
+     (alist-get 'body skill)
+     (lambda (fields body)
+       (let ((name (scooter-kanban-edit-field fields "name" t)))
+         (when (string-empty-p body) (user-error "A skill needs a body"))
+         (scooter-kanban-edit--save
+          board (lambda (l)
+                  (plist-put l :skills
+                             (if id
+                                 (scooter-kanban-edit--update
+                                  (scooter-kanban-edit--update (plist-get l :skills) id 'name name)
+                                  id 'body body)
+                               (append (plist-get l :skills) (list `((name . ,name) (body . ,body))))))))
+         (message "Saved the board skill %s" name))))))
+
+(defun scooter-kanban-add-skill ()
+  "Write a new skill for every agent on the board at point, in a buffer."
+  (interactive)
+  (scooter-kanban-edit--board-skill-file (scooter-kanban-board-at-point) nil))
 
 (defun scooter-kanban-edit-skill ()
-  "Edit the text of the skill at point."
+  "Edit the skill at point as a file: its name, then its text."
   (interactive)
   (let* ((board (scooter-kanban-board-at-point))
-         (id (scooter-kanban-edit--skill board))
-         (skill (seq-find (lambda (k) (equal (alist-get 'id k) id)) (plist-get board :skills))))
-    (scooter-kanban-edit-text
-     (format "*scooter-skill: %s*" (alist-get 'name skill)) (alist-get 'body skill)
-     (lambda (body)
-       (scooter-kanban-edit--save
-        board (lambda (l) (plist-put l :skills (scooter-kanban-edit--update (plist-get l :skills) id 'body body))))))))
+         (id (scooter-kanban-edit--skill board)))
+    (scooter-kanban-edit--board-skill-file
+     board (seq-find (lambda (k) (equal (alist-get 'id k) id)) (plist-get board :skills)))))
 
 (defun scooter-kanban-rename-skill ()
   "Rename the skill at point."
@@ -333,9 +400,114 @@ PROMPT reads it by name."
        board (lambda (l) (plist-put l :skills (seq-remove (lambda (k) (equal (alist-get 'id k) id))
                                                           (plist-get l :skills))))))))
 
+;;;; Personal skills
+
+(defun scooter-kanban-edit--user-skill-path (id)
+  "Return the /user-skills route for the skill ID."
+  (format "/user-skills/%s" (url-hexify-string id)))
+
+(defun scooter-kanban-edit--user-skill-file (server skill)
+  "Edit SERVER's personal SKILL as a file, or a new one when SKILL is nil.
+Saving creates or updates it with the front matter's name, description
+and enabled, and the body as its instructions."
+  (let ((id (alist-get 'id skill)))
+    (scooter-kanban-edit-file
+     (format "*scooter-skill: %s@%s*" (or (alist-get 'name skill) "new") server)
+     `(("name" . ,(or (alist-get 'name skill) ""))
+       ("description" . ,(or (alist-get 'description skill) ""))
+       ("enabled" . ,(if (or (null skill) (scooter-kanban-enabled-p skill)) "true" "false")))
+     (alist-get 'body skill)
+     (lambda (fields body)
+       (let ((name (scooter-kanban-edit-field fields "name" t))
+             (description (scooter-kanban-edit-field fields "description" t))
+             (enabled (scooter-kanban-edit-true-p (scooter-kanban-edit-field fields "enabled"))))
+         (when (string-empty-p body) (user-error "A skill needs instructions"))
+         (let ((payload `((name . ,name) (description . ,description) (body . ,body)
+                          (enabled . ,(if enabled t :json-false)))))
+           (if id
+               (scooter-request server "PATCH" (scooter-kanban-edit--user-skill-path id) payload)
+             (scooter-request server "POST" "/user-skills" payload)))
+         (scooter-kanban--after-change)
+         (message "Saved the skill %s; it applies to conversations started from now on" name))))))
+
+;;;###autoload
+(defun scooter-kanban-new-user-skill (server)
+  "Write a new personal skill on SERVER, in a buffer; C-c C-c saves it.
+Its name, when to use it and whether it's enabled go in the front matter."
+  (interactive (list (scooter-kanban-server-at-point)))
+  (scooter-kanban-edit--user-skill-file server nil))
+
+;;;###autoload
+(defun scooter-kanban-edit-user-skill ()
+  "Edit the personal skill at point as a file."
+  (interactive)
+  (pcase-let ((`(,server . ,skill) (or (scooter-kanban-user-skill-at-point)
+                                      (scooter-kanban-edit--read-user-skill))))
+    (scooter-kanban-edit--user-skill-file server skill)))
+
+(defun scooter-kanban-edit--read-user-skill ()
+  "Read one of the personal skills on the server at point; (SERVER . SKILL)."
+  (let* ((server (scooter-kanban-server-at-point))
+         (skills (scooter-kanban-user-skills server))
+         (table (mapcar (lambda (k) (cons (alist-get 'name k) k)) skills)))
+    (unless table (user-error "No personal skills on %s" server))
+    (cons server (cdr (assoc (completing-read "Personal skill: " table nil t) table)))))
+
+(defun scooter-kanban-edit--set-user-skill-enabled (server skill enabled)
+  "Make SERVER's personal SKILL ENABLED or not."
+  (scooter-request server "PATCH" (scooter-kanban-edit--user-skill-path (alist-get 'id skill))
+                   `((enabled . ,(if enabled t :json-false))))
+  (scooter-kanban--after-change)
+  (message "%s the skill %s" (if enabled "Enabled" "Disabled") (alist-get 'name skill)))
+
+;;;###autoload
+(defun scooter-kanban-delete-user-skill ()
+  "Delete the personal skill at point."
+  (interactive)
+  (pcase-let ((`(,server . ,skill) (or (scooter-kanban-user-skill-at-point)
+                                      (scooter-kanban-edit--read-user-skill))))
+    (when (yes-or-no-p (format "Delete the skill %s? " (alist-get 'name skill)))
+      (scooter-request server "DELETE" (scooter-kanban-edit--user-skill-path (alist-get 'id skill)))
+      (scooter-kanban--after-change))))
+
+;;;; Hooks
+
+(defun scooter-kanban-edit--set-hook-enabled (server hook enabled)
+  "Turn SERVER's HOOK on or off, as ENABLED says."
+  (unless (eq (alist-get 'userCanDisable hook) t)
+    (user-error "The hook %s is required by the deployment" (alist-get 'id hook)))
+  (scooter-request server "PATCH" (format "/user-hooks/%s" (url-hexify-string (alist-get 'id hook)))
+                   `((enabled . ,(if enabled t :json-false))))
+  (scooter-kanban--after-change)
+  (message "%s the hook %s; it applies to conversations started from now on"
+           (if enabled "Enabled" "Disabled") (alist-get 'id hook)))
+
+;;;; At point
+
+;;;###autoload
+(defun scooter-kanban-edit-at-point ()
+  "Edit what's at point: a personal or board skill as a file, or a card's text."
+  (interactive)
+  (cond
+   ((scooter-kanban-user-skill-at-point) (scooter-kanban-edit-user-skill))
+   ((scooter-kanban-section-of 'scooter-kanban-skill-section) (scooter-kanban-edit-skill))
+   ((scooter-kanban-hook-at-point) (user-error "Hooks are the deployment's; ! turns this one on or off"))
+   (t (scooter-kanban-edit-description))))
+
+;;;###autoload
+(defun scooter-kanban-toggle ()
+  "Enable or disable the personal skill or hook at point."
+  (interactive)
+  (pcase-let ((`(,server . ,skill) (scooter-kanban-user-skill-at-point))
+              (`(,hserver . ,hook) (scooter-kanban-hook-at-point)))
+    (cond
+     (skill (scooter-kanban-edit--set-user-skill-enabled server skill (not (scooter-kanban-enabled-p skill))))
+     (hook (scooter-kanban-edit--set-hook-enabled hserver hook (not (scooter-kanban-enabled-p hook))))
+     (t (user-error "No personal skill or hook here")))))
+
 ;;;###autoload (autoload 'scooter-kanban-edit-dispatch "scooter-kanban-edit" nil t)
 (transient-define-prefix scooter-kanban-edit-dispatch ()
-  "Edit the board at point: its stages, tags and skills."
+  "Edit the board at point: its stages, tags and skills; and your skills and hooks."
   [["Stage at point"
     ("a" "Add after" scooter-kanban-add-stage)
     ("r" "Rename" scooter-kanban-rename-stage)
@@ -349,15 +521,20 @@ PROMPT reads it by name."
     ("[" "Move left" scooter-kanban-tag-left)
     ("]" "Move right" scooter-kanban-tag-right)
     ("x" "Delete" scooter-kanban-delete-tag)]
-   ["Skill at point"
+   ["Board skill at point"
     ("s" "Add" scooter-kanban-add-skill)
-    ("e" "Edit text" scooter-kanban-edit-skill)
+    ("e" "Edit as a file" scooter-kanban-edit-skill)
     ("S" "Rename" scooter-kanban-rename-skill)
     ("k" "Delete" scooter-kanban-delete-skill)]
    ["Board"
     ("N" "New" scooter-kanban-new-board)
     ("R" "Rename" scooter-kanban-rename-board)
-    ("D" "Delete" scooter-kanban-delete-board)]])
+    ("D" "Delete" scooter-kanban-delete-board)]
+   ["Your skills and hooks"
+    ("i" "New personal skill" scooter-kanban-new-user-skill)
+    ("u" "Edit personal skill" scooter-kanban-edit-user-skill)
+    ("!" "Enable/disable at point" scooter-kanban-toggle)
+    ("K" "Delete personal skill" scooter-kanban-delete-user-skill)]])
 
 (provide 'scooter-kanban-edit)
 ;;; scooter-kanban-edit.el ends here
