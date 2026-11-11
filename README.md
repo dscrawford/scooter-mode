@@ -132,7 +132,7 @@ To open each card's chat in a tab of its own instead, set
 `scooter-kanban-open-in` to `tab`. The tab is named after the card, `RET`
 on the card again switches to it, and closing the tab closes the chat's
 shell (the conversation stays on the server; `RET` reopens it). `o` opens
-the tab in the background, and `C-c C-k` from a chat goes back to the
+the tab in the background, and `scooter-kanban` from a chat goes back to the
 board's tab. `]`/`[` still show cards in a window, so stepping through
 them doesn't open a tab for each.
 
