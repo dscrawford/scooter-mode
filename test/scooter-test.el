@@ -73,6 +73,24 @@
                    '((Cookie . "_oauth2_proxy=abc"))))
     (should (equal (scooter-auth-headers-json "dev") "{}"))))
 
+(ert-deftest scooter-test-cookie-name-names-the-header-and-the-secret ()
+  ;; A server whose oauth2-proxy runs with --cookie-name: the header, the
+  ;; pasted prefix and the auth-source entry all use that name.
+  (let ((scooter-servers '((home :url "https://s.example"
+                                 :auth (cookie :cookie-name "__Host-scooter_oauth2"))))
+        (scooter-auth--cache (make-hash-table :test #'eq))
+        saved)
+    (cl-letf (((symbol-function 'scooter-auth--save-secret)
+               (lambda (_host user secret) (push (cons user secret) saved)))
+              ((symbol-function 'scooter-auth--secret)
+               (lambda (_host user) (and (equal user "__Host-scooter_oauth2") "stored"))))
+      (scooter-auth-set-cookie 'home "__Host-scooter_oauth2=abc")
+      (should (equal (scooter-auth-headers 'home) '(("Cookie" . "__Host-scooter_oauth2=abc"))))
+      (should (equal saved '(("__Host-scooter_oauth2" . "abc"))))
+      ;; A restart: the cookie comes back from auth-source under that name.
+      (clrhash scooter-auth--cache)
+      (should (equal (scooter-auth-headers 'home) '(("Cookie" . "__Host-scooter_oauth2=stored")))))))
+
 (ert-deftest scooter-test-headers-command-keeps-placeholder ()
   (let ((server-socket-dir "/tmp/emacs-sock") (server-name "server"))
     (should (string-match-p "{retry})'\\'" (scooter-agent-shell-headers-command 'home)))))
@@ -712,6 +730,46 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
       (scooter-test--add-cookie db "s.example" (format "_oauth2_proxy_%d" (+ i 2)) (string (+ ?c i))))
     (should (equal (scooter-auth--firefox-cookies (scooter-auth--firefox-profile) "s.example")
                    '("abcdefghijk")))))
+
+(ert-deftest scooter-test-firefox-cookies-by-name ()
+  ;; A --cookie-name server: only cookies of that name count, split ones
+  ;; included; the default name's cookie belongs to some other server.
+  (scooter-test-with-firefox db
+    (scooter-test--add-cookie db "s.example" "_oauth2_proxy" "default")
+    (scooter-test--add-cookie db "s.example" "__Host-scooter_oauth2" "whole")
+    (scooter-test--add-cookie db ".example" "__Host-scooter_oauth2_1" "b")
+    (scooter-test--add-cookie db ".example" "__Host-scooter_oauth2_0" "a")
+    (should (equal (scooter-auth--firefox-cookies (scooter-auth--firefox-profile) "s.example"
+                                                  "__Host-scooter_oauth2")
+                   '("whole" "ab")))
+    (should (equal (scooter-auth--firefox-cookies (scooter-auth--firefox-profile) "s.example")
+                   '("default")))))
+
+(ert-deftest scooter-test-browser-login-reads-the-named-cookie ()
+  ;; Firefox has a good cookie under the default name, but the server's is
+  ;; __Host-scooter_oauth2: the sign-in waits for that one and sends it.
+  (scooter-test-with-fake-server url
+    (scooter-test-with-firefox db
+      (let ((scooter-servers `((home :url ,url :auth (cookie :browser firefox
+                                                             :cookie-name "__Host-scooter_oauth2"))))
+            (scooter-auth--cache (make-hash-table :test #'eq))
+            (scooter-auth-browser-poll-interval 0.1)
+            saved opened)
+        (scooter-test--add-cookie db "127.0.0.1" "_oauth2_proxy" "good")
+        (scooter-test--add-cookie db "127.0.0.1" "__Host-scooter_oauth2" "expired")
+        (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
+                  ((symbol-function 'scooter-auth--save-secret)
+                   (lambda (_host user secret) (push (cons user secret) saved)))
+                  ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste")))
+                  ((symbol-function 'scooter-auth--browse-firefox)
+                   (lambda (u &rest _)
+                     (push u opened)
+                     (run-at-time 0.3 nil (lambda () (scooter-test--add-cookie
+                                                      db "127.0.0.1" "__Host-scooter_oauth2" "good"))))))
+          (should (equal (scooter-auth-headers 'home t)
+                         '(("Cookie" . "__Host-scooter_oauth2=good"))))
+          (should (equal opened (list (concat url "/oauth2/start?rd=%2F"))))
+          (should (equal saved '(("__Host-scooter_oauth2" . "good")))))))))
 
 (ert-deftest scooter-test-browser-login-reuses-the-firefox-session ()
   (scooter-test-with-fake-server url

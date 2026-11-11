@@ -4,6 +4,7 @@
 ;; /whoami: JSON when the cookie is "good", else a 302 to the login page.
 ;; /forbidden: Scooter's own JSON 403.
 ;; /oauth2/auth: oauth2-proxy's check, 202 for the "good" cookie, else 401.
+;; The cookie's name doesn't matter: a --cookie-name server is the same fake.
 ;; /conversations: two conversations; /conversations/events: an empty stream.
 
 (defun fake--reply (conn status ctype body)
@@ -25,10 +26,10 @@
                           ((string-match-p "\\`[A-Z]+ /forbidden" text)
                            (fake--reply conn "403 Forbidden" "application/json" "{\"error\":\"not your conversation\"}"))
                           ((string-match-p "\\`GET /oauth2/auth " text)
-                           (fake--reply conn (if (string-match-p "^Cookie: _oauth2_proxy=good\r" text)
+                           (fake--reply conn (if (string-match-p "^Cookie: [^=\r\n]+=good\r" text)
                                                  "202 Accepted" "401 Unauthorized")
                                         "text/plain" ""))
-                          ((string-match-p "^Cookie: _oauth2_proxy=good" text)
+                          ((string-match-p "^Cookie: [^=\r\n]+=good\r" text)
                            (fake--reply conn "200 OK" "application/json" "{\"id\":\"me\"}"))
                           (t (process-send-string
                               conn "HTTP/1.1 302 Found\r\nLocation: /oauth2/start\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")

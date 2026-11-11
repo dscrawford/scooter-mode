@@ -23,8 +23,10 @@
 
 NAME is a symbol.  PLIST keys:
   :url    the server's base URL (required)
-  :auth   nil, `cookie', (cookie :browser firefox) to take the cookie
-          from Firefox, or (oidc :issuer URL :client-id ID [:scopes LIST])
+  :auth   nil, `cookie', (cookie [:browser firefox] [:cookie-name NAME])
+          to take the cookie from Firefox and/or from an oauth2-proxy
+          run with --cookie-name=NAME (default `_oauth2_proxy'), or
+          (oidc :issuer URL :client-id ID [:scopes LIST])
   :model  default model for new conversations
   :self   non-nil inside a Scooter sandbox: chat with its own
           conversation via the router's self-access (no :url)

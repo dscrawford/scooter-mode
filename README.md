@@ -53,7 +53,10 @@ the `scooter` binary on `PATH` (`nix profile install github:chadac-me/scooter-mo
   one.
 - Auth: `cookie` asks for the `_oauth2_proxy` cookie (or reads it from
   auth-source, host = the server, user = `_oauth2_proxy`) and saves it to
-  your first `auth-sources` entry, replacing the old one. `oidc` logs in
+  your first `auth-sources` entry, replacing the old one. If oauth2-proxy
+  runs with `--cookie-name`, give it: `(cookie :cookie-name
+  "__Host-scooter_oauth2")` sends, asks for and stores that cookie
+  instead (host = the server, user = the name). `oidc` logs in
   through the browser with PKCE; oauth2-proxy must run with
   `--skip-jwt-bearer-tokens` and accept the client as an extra JWT issuer.
   GitHub issues no ID tokens, so GitHub-backed servers use `cookie`.
@@ -69,7 +72,8 @@ instead of being pasted:
 ```
 
 When a request needs a cookie (none saved yet, or the saved one was refused),
-Emacs reads `_oauth2_proxy` from your Firefox profiles and checks it against
+Emacs reads the session cookie (`_oauth2_proxy`, or the `:cookie-name` you
+give) from your Firefox profiles and checks it against
 the server's `/oauth2/auth`. If Firefox is already signed in, that is all;
 otherwise `<server>/oauth2/start` opens in Firefox (`browse-url-firefox`, or
 `browse-url` when there's no `firefox` to run) and Emacs watches the profiles
@@ -90,8 +94,11 @@ gives up). Either way the cookie is saved to auth-source as with plain
   plain `cookie` if you want to paste the value.
 - Cookies for the server's host and its parent domains count (a
   `--cookie-domain=.example.org` session works), and a session oauth2-proxy
-  split into `_oauth2_proxy_0`, `_1`, … is joined back into one value. The
-  cookie name must be the default `_oauth2_proxy`.
+  split into `_oauth2_proxy_0`, `_1`, … is joined back into one value. A
+  server whose oauth2-proxy runs with `--cookie-name` needs that name in
+  `:cookie-name`, e.g. `(cookie :browser firefox :cookie-name
+  "__Host-scooter_oauth2")`; otherwise Emacs waits for a cookie that never
+  appears.
 - Set `browse-url-firefox-program` if `firefox` isn't on `PATH`. If the
   server doesn't serve oauth2-proxy's `/oauth2/auth`, point
   `scooter-auth-browser-check-path` at a path that answers 2xx only when
