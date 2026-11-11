@@ -41,6 +41,8 @@
 (require 'scooter-agent-shell)
 (require 'scooter)
 
+(defvar scooter-auth-quiet)
+
 (declare-function scooter-sandbox "scooter-conversation")
 (declare-function scooter-web-services "scooter-conversation")
 (declare-function scooter-links "scooter-conversation")
@@ -176,6 +178,9 @@ server has no such route.")
 
 (defvar-local scooter-kanban--refresh-timer nil
   "Pending debounced refresh.")
+
+(defvar-local scooter-kanban--failed nil
+  "Non-nil when the last fetch got an error from every server.")
 
 (defvar-local scooter-kanban--stale nil
   "Non-nil when a change arrived while the buffer was out of sight.")
@@ -720,15 +725,24 @@ USER is each server's personal skills and hooks, as (SERVER . PLIST)."
     ("M-4" "To cards" magit-section-show-level-4-all)]])
 
 (defun scooter-kanban--buffer ()
-  "Return the kanban buffer, showing every server's boards."
+  "Return the kanban buffer, showing every server's boards.
+An existing buffer whose last fetch failed everywhere (a sign-in that
+timed out, say) is fetched again."
   (let ((buf (get-buffer-create "*scooter-kanban*")))
     (with-current-buffer buf
-      (unless (derived-mode-p 'scooter-kanban-mode)
-        (scooter-kanban-mode)
-        (setq scooter-kanban--servers (seq-remove (lambda (s) (scooter-server-get s :self))
-                                                  (scooter-server-names)))
-        (scooter-kanban-refresh)
-        (scooter-kanban--start-streams)))
+      (if (derived-mode-p 'scooter-kanban-mode)
+          (when scooter-kanban--failed (scooter-kanban-refresh))
+        ;; C-g during the first fetch (a sign-in wait) leaves nothing
+        ;; worth keeping: drop the buffer so the next open starts over.
+        (condition-case nil
+            (progn
+              (scooter-kanban-mode)
+              (setq scooter-kanban--servers (seq-remove (lambda (s) (scooter-server-get s :self))
+                                                        (scooter-server-names)))
+              (scooter-kanban-refresh)
+              (scooter-kanban--start-streams))
+          (quit (kill-buffer buf)
+                (signal 'quit nil)))))
     buf))
 
 ;;;###autoload
@@ -771,9 +785,11 @@ CONVERSATION is (SERVER ID) to go to instead."
   "Refetch and redraw the boards."
   (interactive)
   (setq scooter-kanban--stale nil)
-  (scooter-kanban--render
-   (mapcar (lambda (s) (cons s (scooter-kanban--fetch s))) scooter-kanban--servers)
-   (mapcar (lambda (s) (cons s (scooter-kanban--fetch-user s))) scooter-kanban--servers)))
+  (let ((boards (mapcar (lambda (s) (cons s (scooter-kanban--fetch s))) scooter-kanban--servers)))
+    (setq scooter-kanban--failed (and boards (seq-every-p (lambda (b) (stringp (cdr b))) boards)))
+    (scooter-kanban--render
+     boards
+     (mapcar (lambda (s) (cons s (scooter-kanban--fetch-user s))) scooter-kanban--servers))))
 
 (defun scooter-kanban--visible-p (buf)
   "Non-nil when BUF shows in some window."
@@ -783,7 +799,8 @@ CONVERSATION is (SERVER ID) to go to instead."
   "Refresh WIN's board if a change arrived while it was hidden."
   (with-current-buffer (window-buffer win)
     (when scooter-kanban--stale
-      (ignore-errors (scooter-kanban-refresh)))))
+      (let ((scooter-auth-quiet t))
+        (ignore-errors (scooter-kanban-refresh))))))
 
 (defun scooter-kanban--schedule-refresh (buf)
   "Refresh BUF soon, coalescing bursts; later if it is out of sight."
@@ -797,7 +814,8 @@ CONVERSATION is (SERVER ID) to go to instead."
                                (with-current-buffer buf
                                  (setq scooter-kanban--refresh-timer nil)
                                  (if (scooter-kanban--visible-p buf)
-                                     (ignore-errors (save-excursion (scooter-kanban-refresh)))
+                                     (let ((scooter-auth-quiet t))
+                                       (ignore-errors (save-excursion (scooter-kanban-refresh))))
                                    (setq scooter-kanban--stale t)))))))))))
 
 (defun scooter-kanban--start-streams ()
@@ -807,18 +825,22 @@ CONVERSATION is (SERVER ID) to go to instead."
     (scooter-kanban--follow (current-buffer) server)))
 
 (defun scooter-kanban--follow (buf server)
-  "Follow SERVER's change stream for BUF, reconnecting while BUF lives."
+  "Follow SERVER's change stream for BUF, reconnecting while BUF lives.
+Quietly: not being signed in means trying again later, not a sign-in."
   (when (buffer-live-p buf)
-    (when-let* ((proc (ignore-errors
-                        (scooter-http-stream server "/conversations/events"
-                                             (lambda (frame)
-                                               (unless (equal (alist-get 'kind frame) "snapshot")
-                                                 (scooter-kanban--schedule-refresh buf)))))))
-      (set-process-sentinel
-       proc (lambda (_p _e)
-              (when (buffer-live-p buf)
-                (run-at-time 10 nil #'scooter-kanban--follow buf server))))
-      (with-current-buffer buf (push proc scooter-kanban--streams)))))
+    (let ((proc (ignore-errors
+                  (let ((scooter-auth-quiet t))
+                    (scooter-http-stream server "/conversations/events"
+                                         (lambda (frame)
+                                           (unless (equal (alist-get 'kind frame) "snapshot")
+                                             (scooter-kanban--schedule-refresh buf))))))))
+      (if (not proc)
+          (run-at-time 10 nil #'scooter-kanban--follow buf server)
+        (set-process-sentinel
+         proc (lambda (_p _e)
+                (when (buffer-live-p buf)
+                  (run-at-time 10 nil #'scooter-kanban--follow buf server))))
+        (with-current-buffer buf (push proc scooter-kanban--streams))))))
 
 (defun scooter-kanban--stop-streams ()
   "Stop this buffer's change streams."

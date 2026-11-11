@@ -19,6 +19,8 @@
 (require 'scooter-http)
 (require 'transient)
 
+(defvar scooter-auth-quiet)
+
 (declare-function scooter-open "scooter" (server id))
 (declare-function scooter-new "scooter" (server text &optional model))
 (autoload 'scooter-dispatch "scooter" nil t)
@@ -430,10 +432,15 @@ Insert nothing when the last field is empty."
   "Follow SERVER's change stream for BUF, reconnecting while BUF lives."
   (when (buffer-live-p buf)
     (let ((proc (ignore-errors
-                  (scooter-http-stream server "/conversations/events"
-                                       (lambda (frame)
-                                         (unless (equal (alist-get 'kind frame) "snapshot")
-                                           (scooter-list--schedule-refresh buf)))))))
+                  ;; Quietly: not being signed in is no reason for a
+                  ;; background stream to open the sign-in page.
+                  (let ((scooter-auth-quiet t))
+                    (scooter-http-stream server "/conversations/events"
+                                         (lambda (frame)
+                                           (unless (equal (alist-get 'kind frame) "snapshot")
+                                             (scooter-list--schedule-refresh buf))))))))
+      (unless proc
+        (run-at-time 10 nil #'scooter-list--follow buf server))
       (when proc
         (set-process-sentinel
          proc (lambda (_p _e)

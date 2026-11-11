@@ -61,53 +61,61 @@ the `scooter` binary on `PATH` (`nix profile install github:chadac-me/scooter-mo
   `--skip-jwt-bearer-tokens` and accept the client as an extra JWT issuer.
   GitHub issues no ID tokens, so GitHub-backed servers use `cookie`.
 
-### Signing in through Firefox
+### Signing in through a browser
 
-With `:auth (cookie :browser firefox)` the cookie comes from your own Firefox
-instead of being pasted:
+With `:auth (cookie :browser BROWSER)` the cookie comes from your own browser
+instead of being pasted. `BROWSER` is `firefox`, `chromium`, `chrome`,
+`brave` or `librewolf` (see `scooter-auth-browsers`), or `t` for all of them:
 
 ```elisp
 (setq scooter-servers
-      '((home :url "https://scooter.example.org" :auth (cookie :browser firefox))))
+      '((home :url "https://scooter.example.org" :auth (cookie :browser t))))
 ```
 
 When a request needs a cookie (none saved yet, or the saved one was refused),
 Emacs reads the session cookie (`_oauth2_proxy`, or the `:cookie-name` you
-give) from your Firefox profiles and checks it against
-the server's `/oauth2/auth`. If Firefox is already signed in, that is all;
-otherwise `<server>/oauth2/start` opens in Firefox (`browse-url-firefox`, or
-`browse-url` when there's no `firefox` to run) and Emacs watches the profiles
-until the new session shows up (`scooter-auth-login-timeout`, 5 minutes; `C-g`
-gives up). Either way the cookie is saved to auth-source as with plain
-`cookie`. It never asks you to paste it. `C-c s s B`
-(`scooter-auth-browser-login`) does the same on demand.
+give) from the browser's profiles and checks it against the server's
+`/oauth2/auth`. If a browser is already signed in, that is all; otherwise
+`<server>/oauth2/start` opens — in that browser for a named one, through
+`browse-url` for `t` — and Emacs watches the profiles until the new session
+shows up (`scooter-auth-login-timeout`, 5 minutes; `C-g` gives up). Either way
+the cookie is saved to auth-source as with plain `cookie`. It never asks you
+to paste it. `C-c s s B` (`scooter-auth-browser-login`) does the same on
+demand.
 
-- Profiles are found through `scooter-auth-firefox-directories`
-  (`~/.mozilla/firefox`, `$XDG_CONFIG_HOME` and the other XDG, macOS, Snap and
-  Flatpak locations). The one `profiles.ini` makes the default is read first,
-  then the others in each `profiles.ini`, then any other directory there that
-  holds a `cookies.sqlite`. So signing in from a profile that isn't the
-  default still works. Set `scooter-auth-firefox-profile` to read only one.
-  `cookies.sqlite` and its WAL are copied before reading, so a running
-  Firefox is fine. Needs Emacs built with sqlite (`(sqlite-available-p)`).
-  Without it, or with no profile at all, you get an error saying so; use
-  plain `cookie` if you want to paste the value.
+- Firefox-family profiles come from `profiles.ini` (the default one first,
+  then the rest, then any other directory there holding a `cookies.sqlite`);
+  Chromium-family ones from the user data directory's `Local State` (the
+  last used first). The directories searched are in `scooter-auth-browsers`,
+  with XDG, Snap and Flatpak locations; set `scooter-auth-browser-profile` to
+  read one profile only. The databases are copied before reading, so a
+  running browser is fine. Needs Emacs built with sqlite
+  (`(sqlite-available-p)`). Without it, or with no profile at all, you get an
+  error saying so; use plain `cookie` if you want to paste the value.
+- Chromium encrypts its cookies. With its basic password store (the usual
+  thing outside GNOME/KDE sessions) they're decrypted right here; with the
+  keyring (`v11` values) the key is read from the Secret Service item
+  `"Chromium Safe Storage"`/`"Brave Safe Storage"`/… through `secrets.el`,
+  so Emacs needs D-Bus and an unlocked keyring. Cookies that can't be
+  decrypted are skipped, and a timed-out sign-in says how many. Chromium on
+  macOS keeps its key in the Keychain and isn't read.
 - Cookies for the server's host and its parent domains count (a
   `--cookie-domain=.example.org` session works), and a session oauth2-proxy
   split into `_oauth2_proxy_0`, `_1`, … is joined back into one value. A
   server whose oauth2-proxy runs with `--cookie-name` needs that name in
-  `:cookie-name`, e.g. `(cookie :browser firefox :cookie-name
+  `:cookie-name`, e.g. `(cookie :browser t :cookie-name
   "__Host-scooter_oauth2")`; otherwise Emacs waits for a cookie that never
   appears.
-- Set `browse-url-firefox-program` if `firefox` isn't on `PATH`. If the
-  server doesn't serve oauth2-proxy's `/oauth2/auth`, point
-  `scooter-auth-browser-check-path` at a path that answers 2xx only when
-  signed in.
+- Each browser's `:program` opens the page (`browse-url-firefox-program`,
+  `browse-url-chromium-program`, `brave`, …); when it isn't on `PATH`,
+  `browse-url` does. If the server doesn't serve oauth2-proxy's
+  `/oauth2/auth`, point `scooter-auth-browser-check-path` at a path that
+  answers 2xx only when signed in.
 - One sign-in runs at a time: while Emacs waits, other shells' bridges are
-  told to retry and wait for it.
-- Chromium-based browsers aren't read: their cookies are encrypted with a
-  key from the desktop keyring, and driving one over DevTools needs a
-  WebSocket client Emacs doesn't have built in.
+  told to retry and wait for it. A sign-in that times out or is cancelled
+  with `C-g` isn't repeated until your next command, so one `scooter-kanban`
+  waits once, not once per request it makes; background work (change
+  streams, timed refreshes) never opens the sign-in page at all.
 
 ### Kanban boards
 
