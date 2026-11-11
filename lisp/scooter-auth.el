@@ -10,16 +10,10 @@
 ;; - `cookie': the `_oauth2_proxy' session cookie, pasted or read from
 ;;   auth-source, and saved there.  Works with any oauth2-proxy, GitHub-backed
 ;;   ones included.
-;; - (cookie :browser BROWSER): the same cookie, taken from a browser's
-;;   own jar: BROWSER is `firefox', `chromium', `brave', ... (see
-;;   `scooter-auth-browsers') or t for all of them.  When no profile has
-;;   a live session, the sign-in page opens there (or in the default
-;;   browser, for t) and Emacs waits for the cookie to appear.  It never
-;;   asks to paste one, and a failed or cancelled wait isn't repeated
-;;   until the next command.
-;; - Either form takes :cookie-name NAME when oauth2-proxy runs with
-;;   --cookie-name=NAME (a `__Host-' one, say).  The default is
-;;   `_oauth2_proxy'.
+;; - (cookie :browser BROWSER): the same cookie read from a browser's jar
+;;   (`scooter-auth-browsers'; t for all), signing in there when needed.
+;; - Either form takes :cookie-name NAME to match oauth2-proxy's
+;;   --cookie-name (default `_oauth2_proxy').
 ;; - (oidc :issuer URL :client-id ID): an ID token from Authorization Code +
 ;;   PKCE with a loopback redirect, sent as a bearer token.  oauth2-proxy
 ;;   must run with --skip-jwt-bearer-tokens.  The refresh token is kept in
@@ -152,13 +146,8 @@ signals `scooter-auth-busy' rather than open a second prompt;
 
 ;;;; Browser sign-in
 
-;; The cookie comes out of a browser's own jar.  Two jar formats cover
-;; the browsers people run: Mozilla's cookies.sqlite (Firefox, LibreWolf)
-;; and Chromium's Cookies (Chromium, Chrome, Brave, ...).  Chromium
-;; encrypts its values with AES-128-CBC under a key derived either from
-;; the fixed password "peanuts" (its basic store, prefix "v10") or from a
-;; password it keeps in the desktop keyring (prefix "v11"); both are
-;; readable here, the latter through the Secret Service.
+;; Two jar formats: Mozilla's cookies.sqlite and Chromium's encrypted
+;; Cookies (see `scooter-auth--chromium-decrypt').
 
 (defcustom scooter-auth-browsers
   `((firefox :jar mozilla
@@ -483,9 +472,10 @@ such as \"Chromium Safe Storage\"."
 
 (defun scooter-auth--chromium-decrypt (blob host version secret)
   "Decrypt Chromium's encrypted cookie BLOB, set for HOST, or return nil.
-VERSION is the jar's schema version: from 24 on, the plaintext starts
-with the SHA-256 of HOST, which binds a cookie to its host.  SECRET
-names the keyring item for v11 blobs."
+AES-128-CBC: \"v10\" blobs use the fixed password \"peanuts\", \"v11\"
+ones the password in the keyring item SECRET.  VERSION is the jar's
+schema version: from 24 on, the plaintext starts with the SHA-256 of
+HOST, which binds a cookie to its host."
   (when-let* (((and (stringp blob) (> (length blob) 3)
                     (memq 'ciphers (gnutls-available-p))))
               (key (pcase (substring blob 0 3)
