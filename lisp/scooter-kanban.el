@@ -78,7 +78,7 @@ The message starts a run, so the agent can act on the new stage."
 `tab': in a tab-bar tab of its own, named after the card.  Opening the
 card again switches to its tab, and closing the tab closes the
 conversation's shell; the conversation itself stays on the server.
-`C-c C-k' in a shell then goes to the board's tab."
+`scooter-kanban' in a shell then goes to the board's tab."
   :type '(choice (const :tag "Another window" window)
                  (const :tag "A tab of its own" tab))
   :group 'scooter)
