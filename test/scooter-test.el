@@ -723,7 +723,7 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
         (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
                   ((symbol-function 'scooter-auth--save-secret)
                    (lambda (_host user secret) (push (cons user secret) saved)))
-                  ((symbol-function 'browse-url) (lambda (u &rest _) (push u opened)))
+                  ((symbol-function 'scooter-auth--browse-firefox) (lambda (u &rest _) (push u opened)))
                   ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste"))))
           (should (equal (scooter-auth-headers 'home) '(("Cookie" . "_oauth2_proxy=good"))))
           (should-not opened)
@@ -740,7 +740,7 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
         (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
                   ((symbol-function 'scooter-auth--save-secret) #'ignore)
                   ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste")))
-                  ((symbol-function 'browse-url)
+                  ((symbol-function 'scooter-auth--browse-firefox)
                    (lambda (u &rest _)
                      (push u opened)
                      ;; The user signs in a little later.
@@ -762,18 +762,60 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
             (scooter-auth-login-timeout 1)
             (scooter-auth-browser-poll-interval 0.1))
         (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
-                  ((symbol-function 'browse-url) #'ignore))
+                  ((symbol-function 'scooter-auth--browse-firefox) #'ignore))
           (should (string-match-p "not finished"
                                   (cadr (should-error (scooter-auth-headers 'home t) :type 'user-error))))
           (should-not (scooter-auth--get 'home :signing-in)))))))
 
-(ert-deftest scooter-test-browser-login-without-firefox-asks-to-paste ()
+(ert-deftest scooter-test-browser-login-without-firefox-never-asks-to-paste ()
   (let ((scooter-servers '((home :url "https://s.example" :auth (cookie :browser firefox))))
         (scooter-auth--cache (make-hash-table :test #'eq))
         (scooter-auth-firefox-directories (list "/nonexistent/firefox"))
         (scooter-auth-firefox-profile nil))
     (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
               ((symbol-function 'scooter-auth--save-secret) #'ignore)
-              ((symbol-function 'y-or-n-p) #'ignore)
-              ((symbol-function 'read-passwd) (lambda (&rest _) "pasted")))
-      (should (equal (scooter-auth-headers 'home t) '(("Cookie" . "_oauth2_proxy=pasted")))))))
+              ((symbol-function 'y-or-n-p) (lambda (&rest _) (error "Asked to open a browser")))
+              ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste"))))
+      (should (string-match-p "no Firefox profile"
+                              (cadr (should-error (scooter-auth-headers 'home t) :type 'user-error))))
+      (should-not (scooter-auth--get 'home :signing-in)))))
+
+(ert-deftest scooter-test-firefox-profiles-default-first-then-the-rest ()
+  (scooter-test-with-firefox _db
+    (let ((other (expand-file-name "zzz.old" root))
+          (stray (expand-file-name "stray" root)))
+      (make-directory other)
+      (make-directory stray)
+      (with-temp-file (expand-file-name "cookies.sqlite" stray))
+      ;; Not a profile: no cookies.sqlite and not in profiles.ini.
+      (make-directory (expand-file-name "Crash Reports" root))
+      (should (equal (scooter-auth--firefox-profiles)
+                     (list (expand-file-name "abc123.default-release" root) other stray)))
+      (let ((scooter-auth-firefox-profile other))
+        (should (equal (scooter-auth--firefox-profiles) (list other)))))))
+
+(ert-deftest scooter-test-browser-login-finds-the-cookie-in-another-profile ()
+  ;; Signed in in a profile other than the default: still no prompt.
+  (scooter-test-with-fake-server url
+    (scooter-test-with-firefox _db
+      (let* ((scooter-servers `((home :url ,url :auth (cookie :browser firefox))))
+             (scooter-auth--cache (make-hash-table :test #'eq))
+             (other (expand-file-name "zzz.old" root))
+             (db2 nil)
+             opened)
+        (make-directory other)
+        (unwind-protect
+            (progn
+              (setq db2 (sqlite-open (expand-file-name "cookies.sqlite" other)))
+              (sqlite-execute db2 "CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY,
+ originAttributes TEXT NOT NULL DEFAULT '', name TEXT, value TEXT, host TEXT, path TEXT,
+ expiry INTEGER, lastAccessed INTEGER, creationTime INTEGER, isSecure INTEGER, isHttpOnly INTEGER,
+ CONSTRAINT moz_uniqueid UNIQUE (name, host, path, originAttributes))")
+              (scooter-test--add-cookie db2 "127.0.0.1" "_oauth2_proxy" "good")
+              (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
+                        ((symbol-function 'scooter-auth--save-secret) #'ignore)
+                        ((symbol-function 'scooter-auth--browse-firefox) (lambda (u) (push u opened)))
+                        ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste"))))
+                (should (equal (scooter-auth-headers 'home t) '(("Cookie" . "_oauth2_proxy=good"))))
+                (should-not opened)))
+          (when db2 (sqlite-close db2)))))))

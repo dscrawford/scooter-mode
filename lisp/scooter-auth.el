@@ -10,9 +10,10 @@
 ;; - `cookie': the `_oauth2_proxy' session cookie, pasted or read from
 ;;   auth-source, and saved there.  Works with any oauth2-proxy, GitHub-backed
 ;;   ones included.
-;; - (cookie :browser firefox): the same cookie, taken from the default
-;;   Firefox profile; when it has no live session, the sign-in page opens
-;;   there and Emacs waits for the cookie to appear.
+;; - (cookie :browser firefox): the same cookie, taken from Firefox's
+;;   profiles (the default one first); when none has a live session, the
+;;   sign-in page opens in Firefox and Emacs waits for the cookie to
+;;   appear.  It never asks to paste one.
 ;; - (oidc :issuer URL :client-id ID): an ID token from Authorization Code +
 ;;   PKCE with a loopback redirect, sent as a bearer token.  oauth2-proxy
 ;;   must run with --skip-jwt-bearer-tokens.  The refresh token is kept in
@@ -129,18 +130,24 @@ signals `scooter-auth-busy' rather than open a second prompt;
 ;;;; Browser sign-in through Firefox
 
 (defcustom scooter-auth-firefox-directories
-  '("~/.mozilla/firefox" "~/.config/mozilla/firefox"
+  `("~/.mozilla/firefox"
+    ,@(when-let* ((xdg (getenv "XDG_CONFIG_HOME")))
+        (list (expand-file-name "mozilla/firefox" xdg)))
+    "~/.config/mozilla/firefox"
     "~/Library/Application Support/Firefox"
     "~/snap/firefox/common/.mozilla/firefox"
     "~/.var/app/org.mozilla.firefox/.mozilla/firefox")
-  "Where to look for Firefox's profiles.ini; the first one found wins."
+  "Where to look for Firefox's profiles.ini.
+The first one found gives the default profile; all of them are searched
+for a signed-in cookie."
   :type '(repeat directory)
   :group 'scooter)
 
 (defcustom scooter-auth-firefox-profile nil
   "The Firefox profile directory to read cookies from.
-nil means the one Firefox opens by default, per profiles.ini."
-  :type '(choice (const :tag "Default profile" nil) directory)
+nil means every profile in profiles.ini, the one Firefox opens by
+default first."
+  :type '(choice (const :tag "Every profile" nil) directory)
   :group 'scooter)
 
 (defcustom scooter-auth-browser-check-path "/oauth2/auth"
@@ -188,6 +195,33 @@ The default is oauth2-proxy's own auth check."
             (if (equal (funcall get profile "IsRelative") "0")
                 (funcall get profile "Path")
               (expand-file-name (funcall get profile "Path") root))))))))
+
+(defun scooter-auth--firefox-profiles ()
+  "Return the Firefox profile directories to look for the cookie in.
+Just `scooter-auth-firefox-profile' when that is set.  Otherwise the
+default profile first, then every other profile in each profiles.ini,
+then any directory under those roots that holds a cookies.sqlite."
+  (if scooter-auth-firefox-profile
+      (when (file-directory-p scooter-auth-firefox-profile)
+        (list (expand-file-name scooter-auth-firefox-profile)))
+    (let ((found (list (scooter-auth--firefox-profile))))
+      (dolist (root scooter-auth-firefox-directories)
+        (let ((ini (expand-file-name "profiles.ini" root)))
+          (dolist (section (and (file-exists-p ini) (ignore-errors (scooter-auth--ini-sections ini))))
+            (when-let* (((string-prefix-p "Profile" (car section)))
+                        (path (cdr (assoc "Path" (cdr section)))))
+              (push (if (equal (cdr (assoc "IsRelative" (cdr section))) "0")
+                        path
+                      (expand-file-name path root))
+                    found))))
+        ;; macOS keeps them in Profiles/.
+        (dolist (dir (list root (expand-file-name "Profiles" root)))
+          (dolist (db (and (file-directory-p dir)
+                           (file-expand-wildcards (expand-file-name "*/cookies.sqlite" dir))))
+            (push (file-name-directory db) found))))
+      (seq-filter #'file-directory-p
+                  (delete-dups (mapcar (lambda (dir) (directory-file-name (expand-file-name dir)))
+                                       (nreverse (delq nil found))))))))
 
 (defun scooter-auth--cookie-hosts (host)
   "Return the moz_cookies hosts whose cookies a request to HOST carries.
@@ -246,34 +280,49 @@ writes don't matter."
 
 (defun scooter-auth--browser-sign-in (server)
   "Return a signed-in cookie for SERVER from Firefox, signing in there if needed.
-Without a Firefox profile (or sqlite support), ask to paste one."
-  (let ((profile (scooter-auth--firefox-profile))
+Never asks to paste the cookie: when Firefox's cookies can't be read it
+signals an error saying why."
+  (unless (sqlite-available-p)
+    (user-error "Scooter[%s]: this Emacs has no sqlite support, so it can't read Firefox's cookies"
+                server))
+  (let ((host (scooter-server-host server))
         (rejected nil))
-    (if (not (and profile (sqlite-available-p) (file-directory-p profile)))
-        (progn
-          (message "Scooter[%s]: no Firefox profile found; paste the cookie instead" server)
-          (scooter-auth-set-cookie server))
-      (let* ((look (lambda ()
-                     (seq-find (lambda (value)
-                                 (or (scooter-auth--cookie-valid-p server value)
-                                     (progn (push value rejected) nil)))
-                               (seq-difference (ignore-errors (scooter-auth--firefox-cookies
-                                                               profile (scooter-server-host server)))
-                                               rejected))))
-             (found (funcall look)))
-        (unless found
-          (let ((rd (url-filename (url-generic-parse-url (scooter-server-url server)))))
-            (browse-url (scooter-server-url
-                         server (concat "/oauth2/start?rd="
-                                        (url-hexify-string (if (string-empty-p rd) "/" rd))))))
-          (message "Scooter[%s]: sign in in your browser (C-g cancels)..." server)
-          (with-timeout (scooter-auth-login-timeout
-                         (user-error "Scooter[%s]: sign-in not finished after %d seconds"
-                                     server scooter-auth-login-timeout))
-            (while (not (setq found (funcall look)))
-              (accept-process-output nil scooter-auth-browser-poll-interval))))
-        (message "Scooter[%s]: signed in" server)
-        (scooter-auth-set-cookie server found)))))
+    (unless (scooter-auth--firefox-profiles)
+      (user-error "Scooter[%s]: no Firefox profile in %s; set `scooter-auth-firefox-profile'"
+                  server (string-join scooter-auth-firefox-directories ", ")))
+    (let* ((look (lambda ()
+                   (seq-find (lambda (value)
+                               (or (scooter-auth--cookie-valid-p server value)
+                                   (progn (push value rejected) nil)))
+                             (seq-difference
+                              (delete-dups
+                               ;; Listed afresh each time: signing in may land in
+                               ;; a profile that didn't exist a moment ago.
+                               (mapcan (lambda (profile)
+                                         (ignore-errors (scooter-auth--firefox-cookies profile host)))
+                                       (scooter-auth--firefox-profiles)))
+                              rejected))))
+           (found (funcall look)))
+      (unless found
+        (let ((rd (url-filename (url-generic-parse-url (scooter-server-url server)))))
+          (scooter-auth--browse-firefox
+           (scooter-server-url server (concat "/oauth2/start?rd="
+                                              (url-hexify-string (if (string-empty-p rd) "/" rd))))))
+        (message "Scooter[%s]: sign in in Firefox (C-g cancels)..." server)
+        (with-timeout (scooter-auth-login-timeout
+                       (user-error "Scooter[%s]: sign-in not finished after %d seconds"
+                                   server scooter-auth-login-timeout))
+          (while (not (setq found (funcall look)))
+            (accept-process-output nil scooter-auth-browser-poll-interval))))
+      (message "Scooter[%s]: signed in" server)
+      (scooter-auth-set-cookie server found))))
+
+(defun scooter-auth--browse-firefox (url)
+  "Open URL in Firefox, whose cookies the sign-in reads.
+Fall back to `browse-url' when there is no Firefox to run."
+  (if (executable-find browse-url-firefox-program)
+      (browse-url-firefox url)
+    (browse-url url)))
 
 ;;;###autoload
 (defun scooter-auth-browser-login (server)
