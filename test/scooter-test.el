@@ -73,6 +73,24 @@
                    '((Cookie . "_oauth2_proxy=abc"))))
     (should (equal (scooter-auth-headers-json "dev") "{}"))))
 
+(ert-deftest scooter-test-cookie-name-names-the-header-and-the-secret ()
+  ;; A server whose oauth2-proxy runs with --cookie-name: the header, the
+  ;; pasted prefix and the auth-source entry all use that name.
+  (let ((scooter-servers '((home :url "https://s.example"
+                                 :auth (cookie :cookie-name "__Host-scooter_oauth2"))))
+        (scooter-auth--cache (make-hash-table :test #'eq))
+        saved)
+    (cl-letf (((symbol-function 'scooter-auth--save-secret)
+               (lambda (_host user secret) (push (cons user secret) saved)))
+              ((symbol-function 'scooter-auth--secret)
+               (lambda (_host user) (and (equal user "__Host-scooter_oauth2") "stored"))))
+      (scooter-auth-set-cookie 'home "__Host-scooter_oauth2=abc")
+      (should (equal (scooter-auth-headers 'home) '(("Cookie" . "__Host-scooter_oauth2=abc"))))
+      (should (equal saved '(("__Host-scooter_oauth2" . "abc"))))
+      ;; A restart: the cookie comes back from auth-source under that name.
+      (clrhash scooter-auth--cache)
+      (should (equal (scooter-auth-headers 'home) '(("Cookie" . "__Host-scooter_oauth2=stored")))))))
+
 (ert-deftest scooter-test-headers-command-keeps-placeholder ()
   (let ((server-socket-dir "/tmp/emacs-sock") (server-name "server"))
     (should (string-match-p "{retry})'\\'" (scooter-agent-shell-headers-command 'home)))))
@@ -646,13 +664,16 @@
 
 (defmacro scooter-test-with-firefox (db-var &rest body)
   "Run BODY in a fake Firefox profile; DB-VAR is its open cookies.sqlite.
-The database stays open in WAL mode, as a running Firefox keeps it, so
-fresh rows live in cookies.sqlite-wal until a checkpoint."
+`scooter-auth-browsers' holds just this Firefox, as `firefox'; `root'
+and `profile' name the directories.  The database stays open in WAL
+mode, as a running Firefox keeps it, so fresh rows live in
+cookies.sqlite-wal until a checkpoint."
   (declare (indent 1))
   `(let* ((root (make-temp-file "scooter-firefox" t))
           (profile (expand-file-name "abc123.default-release" root))
-          (scooter-auth-firefox-directories (list root))
-          (scooter-auth-firefox-profile nil)
+          (scooter-auth-browsers `((firefox :jar mozilla :directories (,root)
+                                            :program browse-url-firefox-program)))
+          (scooter-auth-browser-profile nil)
           (,db-var nil))
      (unwind-protect
          (progn
@@ -673,18 +694,19 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
        (when ,db-var (sqlite-close ,db-var))
        (delete-directory root t))))
 
+(defun scooter-test--firefox-jar (profile)
+  "PROFILE's cookies.sqlite."
+  (expand-file-name "cookies.sqlite" profile))
+
 (ert-deftest scooter-test-firefox-default-profile ()
   (scooter-test-with-firefox _db
     ;; The [Install…] default wins over a Profile's Default=1.
-    (should (equal (scooter-auth--firefox-profile)
+    (should (equal (scooter-auth--mozilla-default-profile (list root))
                    (expand-file-name "abc123.default-release" root)))
     (with-temp-file (expand-file-name "profiles.ini" root)
       (insert "[Profile0]\nIsRelative=1\nPath=one\n\n[Profile1]\nIsRelative=0\nPath=/abs/two\nDefault=1\n"))
-    (should (equal (scooter-auth--firefox-profile) "/abs/two"))
-    (let ((scooter-auth-firefox-profile "/my/profile"))
-      (should (equal (scooter-auth--firefox-profile) "/my/profile")))
-    (let ((scooter-auth-firefox-directories (list (expand-file-name "missing" root))))
-      (should-not (scooter-auth--firefox-profile)))))
+    (should (equal (scooter-auth--mozilla-default-profile (list root)) "/abs/two"))
+    (should-not (scooter-auth--mozilla-default-profile (list (expand-file-name "missing" root))))))
 
 (ert-deftest scooter-test-firefox-cookies-match-host-and-parents ()
   (scooter-test-with-firefox db
@@ -695,23 +717,235 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
     (scooter-test--add-cookie db "s.example" "_oauth2_proxy" "exact")
     ;; Still in the WAL: only a copy that brings the -wal along sees them.
     (should (file-exists-p (expand-file-name "abc123.default-release/cookies.sqlite-wal" root)))
-    (should (equal (scooter-auth--firefox-cookies (scooter-auth--firefox-profile) "s.example")
+    (should (equal (scooter-auth--mozilla-cookies (scooter-test--firefox-jar profile) "s.example")
                    '("exact" "parent")))
-    (should (equal (scooter-auth--firefox-cookies (scooter-auth--firefox-profile) "a.s.example")
+    (should (equal (scooter-auth--mozilla-cookies (scooter-test--firefox-jar profile) "a.s.example")
                    '("parent")))
-    (should-not (scooter-auth--firefox-cookies (scooter-auth--firefox-profile) "example.org"))))
+    (should-not (scooter-auth--mozilla-cookies (scooter-test--firefox-jar profile) "example.org"))))
 
 (ert-deftest scooter-test-firefox-cookies-join-split-ones ()
-  ;; oauth2-proxy splits sessions over 4 KB into _oauth2_proxy_0, _1, ...;
-  ;; their values concatenated are the whole cookie.
   (scooter-test-with-firefox db
-    (scooter-test--add-cookie db "s.example" "_oauth2_proxy_10" "k")
+    ;; Inserted out of order; joined by index.
     (scooter-test--add-cookie db "s.example" "_oauth2_proxy_1" "b")
     (scooter-test--add-cookie db "s.example" "_oauth2_proxy_0" "a")
-    (dotimes (i 8)
-      (scooter-test--add-cookie db "s.example" (format "_oauth2_proxy_%d" (+ i 2)) (string (+ ?c i))))
-    (should (equal (scooter-auth--firefox-cookies (scooter-auth--firefox-profile) "s.example")
-                   '("abcdefghijk")))))
+    (scooter-test--add-cookie db "s.example" "_oauth2_proxy_2" "c")
+    (should (equal (scooter-auth--mozilla-cookies (scooter-test--firefox-jar profile) "s.example") '("abc")))
+    ;; A whole cookie beside split parts wins.
+    (scooter-test--add-cookie db "s.example" "_oauth2_proxy" "whole")
+    (should (equal (scooter-auth--mozilla-cookies (scooter-test--firefox-jar profile) "s.example") '("whole")))))
+
+(ert-deftest scooter-test-firefox-cookies-by-name ()
+  ;; A --cookie-name server: only cookies of that name count, split ones
+  ;; included; the default name's cookie belongs to some other server.
+  (scooter-test-with-firefox db
+    (scooter-test--add-cookie db "s.example" "_oauth2_proxy" "default")
+    (scooter-test--add-cookie db "s.example" "__Host-scooter_oauth2" "whole")
+    (scooter-test--add-cookie db ".example" "__Host-scooter_oauth2_1" "b")
+    (scooter-test--add-cookie db ".example" "__Host-scooter_oauth2_0" "a")
+    (should (equal (scooter-auth--mozilla-cookies (scooter-test--firefox-jar profile) "s.example"
+                                                  "__Host-scooter_oauth2")
+                   '("whole" "ab")))
+    (should (equal (scooter-auth--mozilla-cookies (scooter-test--firefox-jar profile) "s.example")
+                   '("default")))))
+
+(ert-deftest scooter-test-firefox-profiles-default-first-then-the-rest ()
+  (scooter-test-with-firefox _db
+    (let ((other (expand-file-name "zzz.old" root))
+          (stray (expand-file-name "stray" root))
+          (firefox (car scooter-auth-browsers)))
+      (make-directory other)
+      (make-directory stray)
+      (with-temp-file (expand-file-name "cookies.sqlite" other))
+      (with-temp-file (expand-file-name "cookies.sqlite" stray))
+      ;; Not profiles: no cookies.sqlite, or not in profiles.ini at all.
+      (make-directory (expand-file-name "Crash Reports" root))
+      (should (equal (scooter-auth--browser-profiles firefox)
+                     (list (expand-file-name "abc123.default-release" root) other stray)))
+      (let ((scooter-auth-browser-profile other))
+        (should (equal (scooter-auth--browser-profiles firefox) (list other))))
+      (let ((scooter-auth-browser-profile (expand-file-name "Crash Reports" root)))
+        (should-not (scooter-auth--browser-profiles firefox))))))
+
+;;;; Chromium's jar
+
+(defconst scooter-test--chromium-schema
+  "CREATE TABLE cookies (creation_utc INTEGER NOT NULL, host_key TEXT NOT NULL,
+ top_frame_site_key TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL,
+ encrypted_value BLOB NOT NULL, path TEXT NOT NULL, expires_utc INTEGER NOT NULL,
+ is_secure INTEGER NOT NULL, is_httponly INTEGER NOT NULL, last_access_utc INTEGER NOT NULL,
+ has_expires INTEGER NOT NULL, is_persistent INTEGER NOT NULL, priority INTEGER NOT NULL,
+ samesite INTEGER NOT NULL, source_scheme INTEGER NOT NULL, source_port INTEGER NOT NULL,
+ last_update_utc INTEGER NOT NULL, source_type INTEGER NOT NULL,
+ has_cross_site_ancestor INTEGER NOT NULL)"
+  "Chromium 156's cookies table.")
+
+(defun scooter-test--unhex (hex)
+  "The bytes HEX spells, as a unibyte string."
+  (apply #'unibyte-string
+         (mapcar (lambda (i) (string-to-number (substring hex i (+ i 2)) 16))
+                 (number-sequence 0 (- (length hex) 2) 2))))
+
+(defun scooter-test--hex (bytes)
+  "BYTES as hex."
+  (mapconcat (lambda (b) (format "%02x" b)) bytes ""))
+
+(defconst scooter-test--chromium-blob
+  (scooter-test--unhex
+   "7631302BB01EEBE40CCFF8B9D3B700273158B01EEE6BEDEECAB4DE6DBA0816A56B00385BC1E91200EA0A6319B9346027DAAE06")
+  "What Chromium 156 (schema 24, basic password store) wrote for a cookie
+on 127.0.0.1 whose value is \"part-a\".")
+
+(defun scooter-test--chromium-encrypt (host value &optional version password)
+  "Encrypt VALUE for HOST as a schema-24 Chromium would, VERSION v10 by default."
+  (let* ((key (scooter-auth--chromium-key (or password "peanuts")))
+         (text (concat (secure-hash 'sha256 host nil nil t) (encode-coding-string value 'utf-8)))
+         (pad (- 16 (% (length text) 16))))
+    (concat (or version "v10")
+            (car (gnutls-symmetric-encrypt 'AES-128-CBC key (make-string 16 ?\s)
+                                           (concat text (make-string pad pad)))))))
+
+(defmacro scooter-test-with-chromium (db-var &rest body)
+  "Run BODY in a fake Chromium user data directory, `root'.
+DB-VAR is the Default profile's open Network/Cookies; `profile' is that
+profile.  `scooter-auth-browsers' holds just this Chromium."
+  (declare (indent 1))
+  `(let* ((root (make-temp-file "scooter-chromium" t))
+          (profile (expand-file-name "Default" root))
+          (scooter-auth-browsers `((chromium :jar chromium :directories (,root)
+                                             :program "chromium" :secret "Chromium Safe Storage")))
+          (scooter-auth-browser-profile nil)
+          (scooter-auth--safe-storage nil)
+          (,db-var nil))
+     (unwind-protect
+         (progn
+           (make-directory (expand-file-name "Network" profile) t)
+           (with-temp-file (expand-file-name "Local State" root)
+             (insert "{\"profile\":{\"info_cache\":{\"Default\":{\"active_time\":1.0,\"name\":\"Me\"}},"
+                     "\"last_used\":\"Default\"}}"))
+           (setq ,db-var (sqlite-open (expand-file-name "Network/Cookies" profile)))
+           (sqlite-execute ,db-var "CREATE TABLE meta (key LONGVARCHAR NOT NULL UNIQUE PRIMARY KEY, value LONGVARCHAR)")
+           (sqlite-execute ,db-var "INSERT INTO meta VALUES ('version', '24')")
+           (sqlite-execute ,db-var scooter-test--chromium-schema)
+           ,@body)
+       (when ,db-var (sqlite-close ,db-var))
+       (delete-directory root t))))
+
+(defun scooter-test--add-chromium-cookie (db host name value &optional plain version)
+  "Insert NAME=VALUE for HOST into the Chromium DB, encrypted (as VERSION) unless PLAIN."
+  (sqlite-execute
+   db (format "INSERT INTO cookies (creation_utc, host_key, top_frame_site_key, name, value,
+ encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires,
+ is_persistent, priority, samesite, source_scheme, source_port, last_update_utc, source_type,
+ has_cross_site_ancestor) VALUES (1, ?, '', ?, ?, X'%s', '/', 99999999999999999, 1, 1, 1, 1, 1, 1, 0, 2, 443, 1, 0, 0)"
+              (if plain "" (scooter-test--hex (scooter-test--chromium-encrypt host value version))))
+   (list host name (if plain value ""))))
+
+(defun scooter-test--chromium-jar (profile)
+  "PROFILE's cookie database."
+  (expand-file-name "Network/Cookies" profile))
+
+(ert-deftest scooter-test-chromium-decrypts-what-chromium-wrote ()
+  (let ((blob scooter-test--chromium-blob))
+    (should (equal (scooter-auth--chromium-decrypt blob "127.0.0.1" 24 nil) "part-a"))
+    ;; Schema 24 binds the value to its host: another host's hash doesn't match.
+    (should-not (scooter-auth--chromium-decrypt blob "evil.example" 24 nil))
+    ;; Our encryption round-trips the same way.
+    (should (equal (scooter-auth--chromium-decrypt (scooter-test--chromium-encrypt "s.example" "héllo")
+                                                   "s.example" 24 nil)
+                   "héllo"))
+    ;; Keyring-encrypted: readable through the browser's Safe Storage item only.
+    (let ((v11 (concat "v11" (substring blob 3)))
+          (scooter-auth--safe-storage nil))
+      (cl-letf (((symbol-function 'scooter-auth--safe-storage-password)
+                 (lambda (label) (and (equal label "Chromium Safe Storage") "peanuts"))))
+        (should (equal (scooter-auth--chromium-decrypt v11 "127.0.0.1" 24 "Chromium Safe Storage")
+                       "part-a"))
+        (should-not (scooter-auth--chromium-decrypt v11 "127.0.0.1" 24 "Brave Safe Storage"))))
+    ;; Not a blob at all.
+    (should-not (scooter-auth--chromium-decrypt "" "127.0.0.1" 24 nil))
+    (should-not (scooter-auth--chromium-decrypt "v10abc" "127.0.0.1" 24 nil))))
+
+(ert-deftest scooter-test-chromium-cookies-by-host-and-name ()
+  (scooter-test-with-chromium db
+    (scooter-test--add-chromium-cookie db "s.example" "_oauth2_proxy" "exact")
+    (scooter-test--add-chromium-cookie db ".example" "_oauth2_proxy" "parent")
+    (scooter-test--add-chromium-cookie db "xs.example" "_oauth2_proxy" "lookalike")
+    (scooter-test--add-chromium-cookie db "s.example" "__Host-x" "whole")
+    (scooter-test--add-chromium-cookie db "s.example" "__Host-y_1" "b")
+    (scooter-test--add-chromium-cookie db "s.example" "__Host-y_0" "a")
+    (scooter-test--add-chromium-cookie db "s.example" "plain" "clear" t)
+    (scooter-test--add-chromium-cookie db "s.example" "__Host-z" "keyring" nil "v11")
+    (let ((jar (scooter-test--chromium-jar profile)))
+      (should (equal (scooter-auth--chromium-cookies jar "s.example") '("exact" "parent")))
+      (should (equal (scooter-auth--chromium-cookies jar "s.example" "__Host-x") '("whole")))
+      (should (equal (scooter-auth--chromium-cookies jar "s.example" "__Host-y") '("ab")))
+      (should (equal (scooter-auth--chromium-cookies jar "s.example" "plain") '("clear")))
+      (should-not (scooter-auth--chromium-cookies jar "example.org"))
+      ;; v11 without the keyring: counted, not returned; with it, read.
+      (setq scooter-auth--undecryptable 0)
+      (cl-letf (((symbol-function 'scooter-auth--safe-storage-password) #'ignore))
+        (should-not (scooter-auth--chromium-cookies jar "s.example" "__Host-z" "Chromium Safe Storage"))
+        (should (= scooter-auth--undecryptable 1)))
+      (cl-letf (((symbol-function 'scooter-auth--safe-storage-password)
+                 (lambda (label) (and (equal label "Chromium Safe Storage") "peanuts"))))
+        (should (equal (scooter-auth--chromium-cookies jar "s.example" "__Host-z" "Chromium Safe Storage")
+                       '("keyring")))))))
+
+(ert-deftest scooter-test-chromium-profiles-last-used-first ()
+  (scooter-test-with-chromium _db
+    (let ((chromium (car scooter-auth-browsers))
+          (p1 (expand-file-name "Profile 1" root))
+          (stray (expand-file-name "Guest" root))
+          (state (expand-file-name "Local State" root)))
+      (make-directory (expand-file-name "Network" p1) t)
+      (with-temp-file (expand-file-name "Network/Cookies" p1))
+      (make-directory stray)
+      (with-temp-file (expand-file-name "Cookies" stray))
+      ;; No jar: not a profile.
+      (make-directory (expand-file-name "Crashpad" root))
+      (with-temp-file state
+        (insert "{\"profile\":{\"info_cache\":{\"Default\":{\"active_time\":1.0},"
+                "\"Profile 1\":{\"active_time\":5.0}},\"last_used\":\"Default\"}}"))
+      (should (equal (scooter-auth--browser-profiles chromium) (list profile p1 stray)))
+      ;; Without last_used, the most recently active profile leads.
+      (with-temp-file state
+        (insert "{\"profile\":{\"info_cache\":{\"Default\":{\"active_time\":1.0},"
+                "\"Profile 1\":{\"active_time\":5.0}}}}"))
+      (should (equal (scooter-auth--browser-profiles chromium) (list p1 profile stray)))
+      ;; No Local State at all: whatever holds a jar.
+      (delete-file state)
+      (should (equal (sort (scooter-auth--browser-profiles chromium) #'string<)
+                     (sort (list profile p1 stray) #'string<)))
+      (let ((scooter-auth-browser-profile p1))
+        (should (equal (scooter-auth--browser-profiles chromium) (list p1)))))))
+
+;;;; Signing in through a browser
+
+(ert-deftest scooter-test-browser-login-reads-the-named-cookie ()
+  ;; Firefox has a good cookie under the default name, but the server's is
+  ;; __Host-scooter_oauth2: the sign-in waits for that one and sends it.
+  (scooter-test-with-fake-server url
+    (scooter-test-with-firefox db
+      (let ((scooter-servers `((home :url ,url :auth (cookie :browser firefox
+                                                             :cookie-name "__Host-scooter_oauth2"))))
+            (scooter-auth--cache (make-hash-table :test #'eq))
+            (scooter-auth-browser-poll-interval 0.1)
+            saved opened)
+        (scooter-test--add-cookie db "127.0.0.1" "_oauth2_proxy" "good")
+        (scooter-test--add-cookie db "127.0.0.1" "__Host-scooter_oauth2" "expired")
+        (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
+                  ((symbol-function 'scooter-auth--save-secret)
+                   (lambda (_host user secret) (push (cons user secret) saved)))
+                  ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste")))
+                  ((symbol-function 'scooter-auth--browse)
+                   (lambda (_browsers u)
+                     (push u opened)
+                     (run-at-time 0.3 nil (lambda () (scooter-test--add-cookie
+                                                      db "127.0.0.1" "__Host-scooter_oauth2" "good"))))))
+          (should (equal (scooter-auth-headers 'home t)
+                         '(("Cookie" . "__Host-scooter_oauth2=good"))))
+          (should (equal opened (list (concat url "/oauth2/start?rd=%2F"))))
+          (should (equal saved '(("__Host-scooter_oauth2" . "good")))))))))
 
 (ert-deftest scooter-test-browser-login-reuses-the-firefox-session ()
   (scooter-test-with-fake-server url
@@ -723,7 +957,7 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
         (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
                   ((symbol-function 'scooter-auth--save-secret)
                    (lambda (_host user secret) (push (cons user secret) saved)))
-                  ((symbol-function 'scooter-auth--browse-firefox) (lambda (u &rest _) (push u opened)))
+                  ((symbol-function 'scooter-auth--browse) (lambda (_b u) (push u opened)))
                   ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste"))))
           (should (equal (scooter-auth-headers 'home) '(("Cookie" . "_oauth2_proxy=good"))))
           (should-not opened)
@@ -740,8 +974,8 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
         (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
                   ((symbol-function 'scooter-auth--save-secret) #'ignore)
                   ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste")))
-                  ((symbol-function 'scooter-auth--browse-firefox)
-                   (lambda (u &rest _)
+                  ((symbol-function 'scooter-auth--browse)
+                   (lambda (_browsers u)
                      (push u opened)
                      ;; The user signs in a little later.
                      (run-at-time 0.3 nil (lambda () (scooter-test--add-cookie
@@ -762,37 +996,85 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
             (scooter-auth-login-timeout 1)
             (scooter-auth-browser-poll-interval 0.1))
         (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
-                  ((symbol-function 'scooter-auth--browse-firefox) #'ignore))
+                  ((symbol-function 'scooter-auth--browse) #'ignore))
           (should (string-match-p "not finished"
                                   (cadr (should-error (scooter-auth-headers 'home t) :type 'user-error))))
-          (should-not (scooter-auth--get 'home :signing-in)))))))
+          (should-not (scooter-auth--get 'home :signing-in))
+          (scooter-auth--forget-failures))))))
+
+(ert-deftest scooter-test-failed-sign-in-waits-once-per-command ()
+  ;; One command fetching twice (boards, then user skills) gets one wait;
+  ;; the next command tries again.  Background work never waits.
+  (scooter-test-with-fake-server url
+    (scooter-test-with-firefox _db
+      (let ((scooter-servers `((home :url ,url :auth (cookie :browser firefox))))
+            (scooter-auth--cache (make-hash-table :test #'eq))
+            (scooter-auth-login-timeout 0.3)
+            (scooter-auth-browser-poll-interval 0.1)
+            (opened 0))
+        (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
+                  ((symbol-function 'scooter-auth--browse) (lambda (&rest _) (cl-incf opened))))
+          (unwind-protect
+              (progn
+                (should (string-match-p "not finished"
+                                        (cadr (should-error (scooter-auth-headers 'home) :type 'user-error))))
+                (should (string-match-p "not finished.*tries again"
+                                        (cadr (should-error (scooter-auth-headers 'home) :type 'user-error))))
+                (should (= opened 1))
+                (let ((scooter-auth-quiet t))
+                  (should-error (scooter-auth-headers 'home) :type 'scooter-auth-needed))
+                (should (= opened 1))
+                ;; The next command starts afresh.
+                (run-hooks 'pre-command-hook)
+                (should-not (memq #'scooter-auth--forget-failures pre-command-hook))
+                (should-error (scooter-auth-headers 'home) :type 'user-error)
+                (should (= opened 2))
+                ;; C-g during the wait counts the same way.
+                (run-hooks 'pre-command-hook)
+                (cl-letf (((symbol-function 'accept-process-output)
+                           (lambda (&rest _) (signal 'quit nil))))
+                  ;; `should-error' handles `error' only; `quit' isn't one.
+                  (should (eq (condition-case nil (progn (scooter-auth-headers 'home) 'returned)
+                                (quit 'quit))
+                              'quit)))
+                (should (= opened 3))
+                (should (equal (scooter-auth--get 'home :sign-in-failed) "sign-in cancelled"))
+                (should-not (scooter-auth--get 'home :signing-in))
+                (should (string-match-p "cancelled"
+                                        (cadr (should-error (scooter-auth-headers 'home) :type 'user-error))))
+                (should (= opened 3))
+                ;; The explicit command always tries.
+                (cl-letf (((symbol-function 'scooter-current-server) (lambda (&rest _) 'home)))
+                  (should-error (call-interactively #'scooter-auth-browser-login) :type 'user-error))
+                (should (= opened 4)))
+            (scooter-auth--forget-failures)))))))
+
+(ert-deftest scooter-test-quiet-auth-uses-only-what-it-has ()
+  ;; A cached or stored cookie serves quietly; nothing else does.
+  (let ((scooter-servers '((home :url "https://s.example" :auth cookie)))
+        (scooter-auth--cache (make-hash-table :test #'eq))
+        (scooter-auth-quiet t))
+    (cl-letf (((symbol-function 'scooter-auth--secret) (lambda (&rest _) "stored"))
+              ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste")))
+              ((symbol-function 'y-or-n-p) (lambda (&rest _) (error "Asked to browse"))))
+      (should (equal (scooter-auth-headers 'home) '(("Cookie" . "_oauth2_proxy=stored"))))
+      (should-error (scooter-auth-headers 'home t) :type 'scooter-auth-needed))))
 
 (ert-deftest scooter-test-browser-login-without-firefox-never-asks-to-paste ()
   (let ((scooter-servers '((home :url "https://s.example" :auth (cookie :browser firefox))))
         (scooter-auth--cache (make-hash-table :test #'eq))
-        (scooter-auth-firefox-directories (list "/nonexistent/firefox"))
-        (scooter-auth-firefox-profile nil))
+        (scooter-auth-browsers '((firefox :jar mozilla :directories ("/nonexistent/firefox"))))
+        (scooter-auth-browser-profile nil))
     (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
               ((symbol-function 'scooter-auth--save-secret) #'ignore)
               ((symbol-function 'y-or-n-p) (lambda (&rest _) (error "Asked to open a browser")))
               ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste"))))
       (should (string-match-p "no Firefox profile"
                               (cadr (should-error (scooter-auth-headers 'home t) :type 'user-error))))
-      (should-not (scooter-auth--get 'home :signing-in)))))
-
-(ert-deftest scooter-test-firefox-profiles-default-first-then-the-rest ()
-  (scooter-test-with-firefox _db
-    (let ((other (expand-file-name "zzz.old" root))
-          (stray (expand-file-name "stray" root)))
-      (make-directory other)
-      (make-directory stray)
-      (with-temp-file (expand-file-name "cookies.sqlite" stray))
-      ;; Not a profile: no cookies.sqlite and not in profiles.ini.
-      (make-directory (expand-file-name "Crash Reports" root))
-      (should (equal (scooter-auth--firefox-profiles)
-                     (list (expand-file-name "abc123.default-release" root) other stray)))
-      (let ((scooter-auth-firefox-profile other))
-        (should (equal (scooter-auth--firefox-profiles) (list other)))))))
+      (should-not (scooter-auth--get 'home :signing-in))
+      (let ((scooter-servers '((home :url "https://s.example" :auth (cookie :browser lynx)))))
+        (should (string-match-p "unknown :browser lynx"
+                                (cadr (should-error (scooter-auth-headers 'home t) :type 'user-error))))))))
 
 (ert-deftest scooter-test-browser-login-finds-the-cookie-in-another-profile ()
   ;; Signed in in a profile other than the default: still no prompt.
@@ -814,8 +1096,51 @@ fresh rows live in cookies.sqlite-wal until a checkpoint."
               (scooter-test--add-cookie db2 "127.0.0.1" "_oauth2_proxy" "good")
               (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
                         ((symbol-function 'scooter-auth--save-secret) #'ignore)
-                        ((symbol-function 'scooter-auth--browse-firefox) (lambda (u) (push u opened)))
+                        ((symbol-function 'scooter-auth--browse) (lambda (_b u) (push u opened)))
                         ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste"))))
                 (should (equal (scooter-auth-headers 'home t) '(("Cookie" . "_oauth2_proxy=good"))))
                 (should-not opened)))
           (when db2 (sqlite-close db2)))))))
+
+(ert-deftest scooter-test-any-browser-reads-every-jar ()
+  ;; :browser t: the sign-in page opens with `browse-url', and whichever
+  ;; browser gets the session serves, Chromium here while Firefox's is stale.
+  (scooter-test-with-fake-server url
+    (scooter-test-with-firefox fdb
+      (let ((firefox (car scooter-auth-browsers)))
+        (scooter-test-with-chromium cdb
+          (let ((scooter-auth-browsers (cons firefox scooter-auth-browsers))
+                (scooter-servers `((home :url ,url :auth (cookie :browser t))))
+                (scooter-auth--cache (make-hash-table :test #'eq))
+                (scooter-auth-browser-poll-interval 0.1)
+                opened)
+            (scooter-test--add-cookie fdb "127.0.0.1" "_oauth2_proxy" "expired")
+            (cl-letf (((symbol-function 'scooter-auth--secret) #'ignore)
+                      ((symbol-function 'scooter-auth--save-secret) #'ignore)
+                      ((symbol-function 'read-passwd) (lambda (&rest _) (error "Asked to paste")))
+                      ((symbol-function 'browse-url-generic) (lambda (&rest _) (push 'generic opened)))
+                      ((symbol-function 'browse-url)
+                       (lambda (u &rest _)
+                         (push u opened)
+                         (run-at-time 0.3 nil (lambda () (scooter-test--add-chromium-cookie
+                                                          cdb "127.0.0.1" "_oauth2_proxy" "good"))))))
+              (should (equal (scooter-auth-headers 'home t) '(("Cookie" . "_oauth2_proxy=good"))))
+              (should (equal opened (list (concat url "/oauth2/start?rd=%2F"))))
+              ;; Firefox alone: Chromium's session doesn't count, and the
+              ;; page opens in Firefox itself.
+              (let ((scooter-servers `((home :url ,url :auth (cookie :browser firefox))))
+                    (scooter-auth--cache (make-hash-table :test #'eq))
+                    (scooter-auth-login-timeout 0.3))
+                (setq opened nil)
+                (cl-letf (((symbol-function 'executable-find)
+                           (lambda (program &rest _) (equal program "firefox"))))
+                  (should-error (scooter-auth-headers 'home t) :type 'user-error))
+                (should (equal opened '(generic)))
+                (scooter-auth--forget-failures))
+              ;; Chromium alone, Firefox's cookie meanwhile good: Chromium's wins anyway.
+              (let ((scooter-servers `((home :url ,url :auth (cookie :browser chromium))))
+                    (scooter-auth--cache (make-hash-table :test #'eq)))
+                (setq opened nil)
+                (should (equal (scooter-auth-headers 'home t) '(("Cookie" . "_oauth2_proxy=good"))))
+                (should-not opened)))))))))
+

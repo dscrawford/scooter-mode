@@ -527,4 +527,78 @@
                  "---\nname: x\nenabled: true\n---\n\n"))
   (should (scooter-kanban-edit-true-p nil))
   (should (scooter-kanban-edit-true-p "True"))
+
   (should-not (scooter-kanban-edit-true-p " false ")))
+
+;;;; Opening while not signed in
+
+(ert-deftest scooter-kanban-test-cancelled-first-open-starts-over ()
+  ;; C-g during the first fetch (a sign-in wait): no empty board is left
+  ;; behind, and the next open fetches again.
+  (let ((scooter-servers '((home :url "https://s.example")))
+        (calls 0))
+    (cl-letf (((symbol-function 'scooter-request)
+               (lambda (_server method path &optional body)
+                 (cl-incf calls)
+                 (if (= calls 1) (signal 'quit nil) (scooter-kanban-test--reply method path body))))
+              ((symbol-function 'scooter-kanban--start-streams) #'ignore))
+      (when (get-buffer "*scooter-kanban*") (kill-buffer "*scooter-kanban*"))
+      (save-window-excursion
+        ;; `should-error' handles `error' only; `quit' isn't one.
+        (should (eq (condition-case nil (progn (scooter-kanban) 'returned) (quit 'quit)) 'quit))
+        (should-not (get-buffer "*scooter-kanban*"))
+        (scooter-kanban)
+        (unwind-protect
+            (with-current-buffer "*scooter-kanban*"
+              (should (> calls 1))
+              (should (save-excursion (goto-char (point-min)) (search-forward "Fix login" nil t))))
+          (kill-buffer "*scooter-kanban*"))))))
+
+(ert-deftest scooter-kanban-test-failed-open-retries-on-the-next-open ()
+  ;; A sign-in that timed out shows its error; the next open fetches again.
+  (let ((scooter-servers '((home :url "https://s.example")))
+        (fail t))
+    (cl-letf (((symbol-function 'scooter-request)
+               (lambda (_server method path &optional body)
+                 (if fail
+                     (user-error "Scooter[home]: sign-in not finished after 300 seconds")
+                   (scooter-kanban-test--reply method path body))))
+              ((symbol-function 'scooter-kanban--start-streams) #'ignore))
+      (when (get-buffer "*scooter-kanban*") (kill-buffer "*scooter-kanban*"))
+      (save-window-excursion
+        (scooter-kanban)
+        (unwind-protect
+            (progn
+              (with-current-buffer "*scooter-kanban*"
+                (should scooter-kanban--failed)
+                (should (save-excursion (goto-char (point-min)) (search-forward "not finished" nil t))))
+              (setq fail nil)
+              (scooter-kanban)
+              (with-current-buffer "*scooter-kanban*"
+                (should-not scooter-kanban--failed)
+                (should (save-excursion (goto-char (point-min)) (search-forward "Fix login" nil t)))))
+          (kill-buffer "*scooter-kanban*"))))))
+
+(ert-deftest scooter-kanban-test-streams-and-timers-never-sign-in ()
+  ;; Change streams and the refreshes they trigger run with auth quiet:
+  ;; not being signed in is no reason to open the sign-in page.
+  (scooter-kanban-test-with-board
+    (let (quiet)
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'scooter-http-stream)
+                       (lambda (&rest _) (push scooter-auth-quiet quiet) (error "down"))))
+              (scooter-kanban--follow (current-buffer) 'home)
+              (should (equal quiet '(t)))
+              ;; A stream that couldn't start is tried again later.
+              (should (seq-some (lambda (timer) (eq (timer--function timer) #'scooter-kanban--follow))
+                                timer-list)))
+            (setq quiet nil)
+            (cl-letf (((symbol-function 'scooter-kanban-refresh)
+                       (lambda () (push scooter-auth-quiet quiet))))
+              (setq scooter-kanban--stale t)
+              (scooter-kanban--shown (selected-window))
+              (should (equal quiet '(t)))))
+        (cancel-function-timers #'scooter-kanban--follow)))))
+
+;;; scooter-kanban-test.el ends here
