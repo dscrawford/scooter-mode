@@ -69,31 +69,35 @@ instead of being pasted:
 ```
 
 When a request needs a cookie (none saved yet, or the saved one was refused),
-Emacs reads `_oauth2_proxy` from the default Firefox profile and checks it
-against the server's `/oauth2/auth`. If Firefox is already signed in, that is
-all; otherwise `<server>/oauth2/start` opens in the browser (`browse-url`) and
-Emacs watches the profile until the new session shows up
-(`scooter-auth-login-timeout`, 5 minutes; `C-g` gives up). Either way the
-cookie is saved to auth-source as with plain `cookie`. `C-c s s B`
+Emacs reads `_oauth2_proxy` from your Firefox profiles and checks it against
+the server's `/oauth2/auth`. If Firefox is already signed in, that is all;
+otherwise `<server>/oauth2/start` opens in Firefox (`browse-url-firefox`, or
+`browse-url` when there's no `firefox` to run) and Emacs watches the profiles
+until the new session shows up (`scooter-auth-login-timeout`, 5 minutes; `C-g`
+gives up). Either way the cookie is saved to auth-source as with plain
+`cookie`. It never asks you to paste it. `C-c s s B`
 (`scooter-auth-browser-login`) does the same on demand.
 
-- The profile is the one `profiles.ini` makes the default, looked up in
-  `scooter-auth-firefox-directories` (`~/.mozilla/firefox`, the XDG, macOS,
-  Snap and Flatpak locations); set `scooter-auth-firefox-profile` to pick
-  another. `cookies.sqlite` and its WAL are copied before reading, so a
-  running Firefox is fine. Needs Emacs built with sqlite
-  (`(sqlite-available-p)`); without it, or without a profile, you are asked
-  to paste the cookie as before.
+- Profiles are found through `scooter-auth-firefox-directories`
+  (`~/.mozilla/firefox`, `$XDG_CONFIG_HOME` and the other XDG, macOS, Snap and
+  Flatpak locations). The one `profiles.ini` makes the default is read first,
+  then the others in each `profiles.ini`, then any other directory there that
+  holds a `cookies.sqlite`. So signing in from a profile that isn't the
+  default still works. Set `scooter-auth-firefox-profile` to read only one.
+  `cookies.sqlite` and its WAL are copied before reading, so a running
+  Firefox is fine. Needs Emacs built with sqlite (`(sqlite-available-p)`).
+  Without it, or with no profile at all, you get an error saying so; use
+  plain `cookie` if you want to paste the value.
 - Cookies for the server's host and its parent domains count (a
   `--cookie-domain=.example.org` session works), and a session oauth2-proxy
   split into `_oauth2_proxy_0`, `_1`, … is joined back into one value. The
   cookie name must be the default `_oauth2_proxy`.
-- Set `browse-url-browser-function` so the sign-in page opens in that same
-  Firefox profile. If the server doesn't serve oauth2-proxy's `/oauth2/auth`,
-  point `scooter-auth-browser-check-path` at a path that answers 2xx only when
+- Set `browse-url-firefox-program` if `firefox` isn't on `PATH`. If the
+  server doesn't serve oauth2-proxy's `/oauth2/auth`, point
+  `scooter-auth-browser-check-path` at a path that answers 2xx only when
   signed in.
 - One sign-in runs at a time: while Emacs waits, other shells' bridges are
-  told to retry and wait for it, as with the paste prompt.
+  told to retry and wait for it.
 - Chromium-based browsers aren't read: their cookies are encrypted with a
   key from the desktop keyring, and driving one over DevTools needs a
   WebSocket client Emacs doesn't have built in.
