@@ -68,11 +68,15 @@
                   (userCanDisable . t) (enabled . t))))))
     (_ nil)))
 
+(defvar scooter-kanban-test--fold-boards nil
+  "Whether the board under test starts with its boards folded.")
+
 (defmacro scooter-kanban-test-with-board (&rest body)
   "Run BODY in a kanban buffer on the fake server, requests in `scooter-kanban-test--calls'."
   (declare (indent 0))
   `(let ((scooter-servers '((home :url "https://s.example")))
          (scooter-kanban-test--calls nil)
+         (scooter-kanban-fold-boards scooter-kanban-test--fold-boards)
          (scooter-kanban-fold-last-stage nil))
      (cl-letf (((symbol-function 'scooter-request)
                 (lambda (_server method path &optional body)
@@ -419,6 +423,21 @@
         (should-not (hidden-p "Write docs"))
         (scooter-kanban-refresh)
         (should-not (hidden-p "Write docs"))))))
+
+(ert-deftest scooter-kanban-test-boards-start-folded ()
+  (let ((scooter-kanban-test--fold-boards t))
+    (scooter-kanban-test-with-board
+      (cl-flet ((hidden-p (text) (progn (goto-char (point-min)) (search-forward text)
+                                        (invisible-p (match-beginning 0)))))
+        (should-not (hidden-p "Work  5 cards"))
+        (should (hidden-p "Design (3)"))
+        ;; From a shell, the board opens on its card, unfolding what holds it.
+        (scooter-kanban (list 'home "c2"))
+        (should (equal (scooter-kanban-card-id (cdr (scooter-kanban-at-point))) "c2"))
+        (should-not (hidden-p "Design (3)"))
+        ;; Unfolded once, it stays so when the board redraws.
+        (scooter-kanban-refresh)
+        (should-not (hidden-p "Design (3)"))))))
 
 ;;;; Personal skills and hooks
 

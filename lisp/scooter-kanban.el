@@ -65,6 +65,12 @@
   :type 'natnum
   :group 'scooter)
 
+(defcustom scooter-kanban-fold-boards t
+  "Non-nil folds every board when the buffer is first drawn.
+TAB unfolds one, and `scooter-kanban' from a shell unfolds its card's."
+  :type 'boolean
+  :group 'scooter)
+
 (defcustom scooter-kanban-fold-last-stage t
   "Non-nil folds each board's last stage, where finished cards pile up."
   :type 'boolean
@@ -499,9 +505,9 @@ A blocker is done once in the board's last stage, wherever it was read."
     (insert (propertize "    E edits stages, tags and skills\n" 'font-lock-face 'scooter-list-dim))))
 
 (defun scooter-kanban--insert-board (board)
-  "Insert BOARD: its stages and their cards."
+  "Insert BOARD: its stages and cards, folded when `scooter-kanban-fold-boards'."
   (let ((stages (plist-get board :stages)))
-    (magit-insert-section (scooter-kanban-board-section board)
+    (magit-insert-section (scooter-kanban-board-section board scooter-kanban-fold-boards)
       (magit-insert-heading
         (propertize (plist-get board :name) 'font-lock-face 'scooter-kanban-board)
         (propertize (format "  %d card%s" (length (plist-get board :cards))
