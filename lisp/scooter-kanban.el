@@ -1235,9 +1235,10 @@ first and, with `scooter-kanban-announce-moves', tells its agent."
                                (car (last (mapcar #'scooter-kanban--position (scooter-kanban-lane board stage))))
                                nil))))
 
-(defun scooter-kanban-new (text)
-  "Start a conversation with TEXT as a card in the stage at point, and open it."
-  (interactive (list (read-string "New card's first message: ")))
+(defun scooter-kanban-new ()
+  "Start an empty conversation as a card in the stage at point, and open it.
+Its first message is typed in the shell."
+  (interactive)
   (let* ((board (scooter-kanban-board-at-point))
          (stage (scooter-kanban-stage-at-point board))
          (server (plist-get board :server))
@@ -1245,10 +1246,8 @@ first and, with `scooter-kanban-announce-moves', tells its agent."
                                              (and (scooter-server-get server :model)
                                                   `((model . ,(scooter-server-get server :model))))))))
     (scooter-kanban--file board stage id)
-    (scooter-request server "POST" (format "/conversations/%s/messages" (url-hexify-string id))
-                     `((text . ,text)))
     (scooter-kanban--after-change server id)
-    (scooter-kanban-show-conversation server id t (truncate-string-to-width text 30 nil nil "…"))))
+    (scooter-kanban-show-conversation server id t "New conversation")))
 
 (defun scooter-kanban-add (id)
   "Put the server's conversation ID on the board at point, in the stage at point."

@@ -191,7 +191,7 @@
     (should (equal (car (scooter-kanban-test--writes))
                    '("PUT" "/conversations/c1/contrib-api/kanban/card/blockers" ((blocked_by . ["c3" "c5"])))))))
 
-(ert-deftest scooter-kanban-test-new-card-files-then-sends ()
+(ert-deftest scooter-kanban-test-new-card-files-then-opens-empty ()
   (scooter-kanban-test-with-board
     (scooter-kanban-test--goto "In progress (")
     (cl-letf* ((reply (symbol-function 'scooter-request))
@@ -202,13 +202,12 @@
                     (funcall reply s method path body))))
                (opened nil)
                ((symbol-function 'scooter-kanban-show-conversation) (lambda (&rest args) (setq opened args))))
-      (scooter-kanban-new "Do the thing")
-      (should (equal opened '(home "new1" t "Do the thing"))))
+      (scooter-kanban-new)
+      (should (equal opened '(home "new1" t "New conversation"))))
     (should (equal (scooter-kanban-test--writes)
                    '(("POST" "/conversations" nil)
                      ("PUT" "/conversations/new1/folder" ((folderId . "s2")))
-                     ("PUT" "/conversations/new1/contrib-api/kanban/card" ((column . "s2") (position . 1)))
-                     ("POST" "/conversations/new1/messages" ((text . "Do the thing"))))))))
+                     ("PUT" "/conversations/new1/contrib-api/kanban/card" ((column . "s2") (position . 1))))))))
 
 (ert-deftest scooter-kanban-test-add-stage-after-point ()
   (scooter-kanban-test-with-board
