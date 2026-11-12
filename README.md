@@ -156,7 +156,8 @@ board's tab. `]`/`[` still show cards in a window, so stepping through
 them doesn't open a tab for each.
 
 - Cards: `>`/`<` next or previous stage, `m` any stage, `M-<up>`/`M-<down>`
-  reorder, `c` new conversation in the stage at point, `a` put an
+  reorder, `c` a new conversation in the stage at point (type its first
+  message in the shell it opens), `a` put an
   existing conversation there, `u` take it off the board, `#` tags (new
   names make tags), `P` priority, `e` description, `x`/`X` add or remove a
   blocker. A move to another stage tells the agent, as the web UI does
