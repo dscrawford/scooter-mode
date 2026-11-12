@@ -142,6 +142,8 @@ Urgent, tags, the agent's note, who moved it last and what still blocks
 it. Boards, stages and cards fold like an outline: `TAB` folds the one at
 point, `M-2` folds everything to boards, `M-3` to stages and `M-4` shows
 every card; a card folds open to its description, blockers, links and URL.
+The boards start folded (`scooter-kanban-fold-boards`), and a fold stays as
+you left it when the board refreshes.
 `RET` opens the card's conversation in agent-shell in another window and
 keeps the board in view (`o` shows it without leaving the board, `]`/`[`
 step through the cards). From a Scooter shell, `scooter-kanban` shows the
