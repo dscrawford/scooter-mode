@@ -139,7 +139,9 @@ Work  5 cards
 
 Each stage lists its cards in board order: status icon, title, High or
 Urgent, tags, the agent's note, who moved it last and what still blocks
-it. Boards, stages and cards fold like an outline: `TAB` folds the one at
+it. The icons of the cards waiting on you, working or failed roll up to
+the stage and board headings, so a folded stage still shows what is going
+on inside it. Boards, stages and cards fold like an outline: `TAB` folds the one at
 point, `M-2` folds everything to boards, `M-3` to stages and `M-4` shows
 every card; a card folds open to its description, blockers, links and URL.
 The boards start folded (`scooter-kanban-fold-boards`), and a fold stays as
