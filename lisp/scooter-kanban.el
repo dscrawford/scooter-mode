@@ -613,6 +613,12 @@ USER is each server's personal skills and hooks, as (SERVER . PLIST)."
            ((null boards) (insert (propertize "  No boards yet; N makes one.\n\n" 'font-lock-face 'scooter-list-dim)))
            (t (mapc #'scooter-kanban--insert-board boards)))
           (scooter-kanban--insert-user server (alist-get server user)))))
+    ;; Drawing a section folded only marks it so; its rows stay in sight
+    ;; unless its body was deferred.  Showing the root hides every folded
+    ;; body and puts the fold mark on each heading, as magit's own
+    ;; refresh does.  Not caching keeps the cache to the user's folds.
+    (let ((magit-section-cache-visibility nil))
+      (magit-section-show magit-root-section))
     (unless (and here (scooter-kanban--goto-ident here))
       (goto-char (min pos (point-max))))))
 

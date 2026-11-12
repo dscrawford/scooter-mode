@@ -392,6 +392,34 @@
       (scooter-kanban-test--goto "Write docs")
       (should (oref (magit-current-section) hidden)))))
 
+(ert-deftest scooter-kanban-test-folds-hide-rows-and-survive-refresh ()
+  ;; Folding hides the rows, not just marks the section; a redraw keeps
+  ;; each fold as the user left it; every foldable heading bears its mark.
+  (let ((magit-section-visibility-indicators '((magit-fringe-bitmap> . magit-fringe-bitmapv) (?> . ?v))))
+    (scooter-kanban-test-with-board
+      (cl-flet ((hidden-p (text) (progn (goto-char (point-min)) (search-forward text)
+                                        (invisible-p (match-beginning 0))))
+                (marked-p (text) (progn (scooter-kanban-test--goto text)
+                                        (seq-some (lambda (o) (overlay-get o 'magit-vis-indicator))
+                                                  (overlays-in (point) (line-end-position))))))
+        ;; Hooks start folded, and folded means out of sight.
+        (should (hidden-p "finish-or-ask"))
+        (should (marked-p "Hooks  2"))
+        (should (marked-p "Design (3)"))
+        (should (marked-p "Write docs"))
+        (should-not (marked-p "E edits"))
+        (scooter-kanban-test--goto "Design (3)")
+        (magit-section-toggle (magit-current-section))
+        (should (hidden-p "Write docs"))
+        (scooter-kanban-refresh)
+        (should (hidden-p "Write docs"))
+        (should (marked-p "Design (3)"))
+        (scooter-kanban-test--goto "Design (3)")
+        (magit-section-toggle (magit-current-section))
+        (should-not (hidden-p "Write docs"))
+        (scooter-kanban-refresh)
+        (should-not (hidden-p "Write docs"))))))
+
 ;;;; Personal skills and hooks
 
 (defun scooter-kanban-test--edit-buffer (name)
