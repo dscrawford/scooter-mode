@@ -104,15 +104,19 @@
   (scooter-kanban-test-with-board
     (let ((text (buffer-substring-no-properties (point-min) (point-max))))
       (should (string-match-p "^home  https://s.example  1 board$" text))
-      (should (string-match-p "^Work  5 cards$" text))
+      ;; A card's status rolls up to its stage and board: one waiting, one working.
+      (should (string-match-p "^Work  5 cards  ! ●$" text))
       (should-not (string-match-p "gone\\|Unfiled\\|Subagent" text))
       ;; Board order is by position; the board root's card, with no row yet,
       ;; sits at 0 in the first stage.
       (should (string-match-p
-               "  Design (3)\n    .*Root filed\n.*No status yet\n    .*Write docs\n.*You · 2h ago\n    ● Fix login HIGH dotfiles\n.*PR #4 open, CI green · Agent · 5m ago · Blocked by 1\n"
+               "  Design (3) ●\n    .*Root filed\n.*No status yet\n    .*Write docs\n.*You · 2h ago\n    ● Fix login HIGH dotfiles\n.*PR #4 open, CI green · Agent · 5m ago · Blocked by 1\n"
                text))
-      (should (string-match-p "  In progress (1)\n    ! Kanban in Emacs URGENT\n" text))
+      (should (string-match-p "  In progress (1) !\n    ! Kanban in Emacs URGENT\n" text))
       (should (string-match-p "  Done (1)\n" text))
+      (scooter-kanban-test--goto "In progress (1)")
+      (search-forward "!")
+      (should (equal (get-text-property (match-beginning 0) 'help-echo) "1 waiting on you"))
       (should (string-match-p "tag    dotfiles  blue" text))
       (should (string-match-p "skill  Repos  board-repos" text)))))
 
@@ -248,7 +252,7 @@
     (should (equal (car (scooter-kanban-test--writes))
                    '("PATCH" "/conversations/c1/starred" ((starred . t)))))
     (should (derived-mode-p 'scooter-kanban-mode))
-    (should (string-match-p "^Work  5 cards$" (buffer-string)))))
+    (should (string-match-p "^Work  5 cards  ! ●$" (buffer-string)))))
 
 (ert-deftest scooter-kanban-test-goto-card-from-a-shell ()
   (scooter-kanban-test-with-board

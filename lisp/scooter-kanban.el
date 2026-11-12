@@ -406,6 +406,24 @@ A blocker is done once in the board's last stage, wherever it was read."
     ("urgent" (propertize "URGENT" 'font-lock-face 'scooter-kanban-urgent))
     ("high" (propertize "HIGH" 'font-lock-face 'scooter-kanban-high))))
 
+(defun scooter-kanban--activity (cards)
+  "Return the status icons CARDS roll up to, or nil when nothing is going on.
+One icon each for the cards waiting on you, working and failed, in that
+order, its count in the tooltip: a folded stage or board still shows what
+is happening inside it."
+  (let ((icons
+         (delq nil
+               (mapcar (lambda (status)
+                         (let ((n (seq-count (lambda (card)
+                                               (eq (scooter-list-status (plist-get card :conv)) status))
+                                             cards)))
+                           (when (> n 0)
+                             (pcase-let ((`(,_ ,icon ,face ,label) (assq status scooter-list--statuses)))
+                               (propertize icon 'font-lock-face face
+                                           'help-echo (format "%d %s" n (downcase label)))))))
+                       '(awaiting running failed)))))
+    (and icons (string-join icons " "))))
+
 (defun scooter-kanban--heading (board card)
   "Return CARD's heading lines on BOARD."
   (let* ((conv (plist-get card :conv))
@@ -478,7 +496,8 @@ A blocker is done once in the board's last stage, wherever it was read."
     (magit-insert-section (scooter-kanban-stage-section id (and last scooter-kanban-fold-last-stage))
       (magit-insert-heading
         (concat "  " (propertize (alist-get 'label stage) 'font-lock-face 'scooter-kanban-stage)
-                (propertize (format " (%d)" (length lane)) 'font-lock-face 'scooter-list-dim)))
+                (propertize (format " (%d)" (length lane)) 'font-lock-face 'scooter-list-dim)
+                (if-let* ((activity (scooter-kanban--activity lane))) (concat " " activity) "")))
       (dolist (card shown) (scooter-kanban--insert-card board card))
       (when (< (length shown) (length lane))
         (magit-insert-section (scooter-kanban-more-section id)
@@ -512,7 +531,8 @@ A blocker is done once in the board's last stage, wherever it was read."
         (propertize (plist-get board :name) 'font-lock-face 'scooter-kanban-board)
         (propertize (format "  %d card%s" (length (plist-get board :cards))
                             (if (= (length (plist-get board :cards)) 1) "" "s"))
-                    'font-lock-face 'scooter-list-dim))
+                    'font-lock-face 'scooter-list-dim)
+        (if-let* ((activity (scooter-kanban--activity (plist-get board :cards)))) (concat "  " activity) ""))
       (cl-loop for (stage . more) on stages
                do (scooter-kanban--insert-stage board stage (null more)))
       (scooter-kanban--insert-settings board)
